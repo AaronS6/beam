@@ -1,0 +1,98 @@
+/**
+ * Beam — Signaling client
+ *
+ * A thin wrapper around socket.io-client that speaks the Beam signaling protocol.
+ * The signaling server's ONLY job is to relay WebRTC metadata (SDP offer/answer,
+ * ICE candidates) between the two peers. File bytes NEVER go through here — they
+ * flow directly device-to-device over an RTCDataChannel once ICE connects.
+ *
+ * Transport note: Caddy gateway routes the request to port 3003 via the
+ * `?XTransformPort=3003` query param. The socket.io path MUST stay "/".
+ */
+
+import { io, type Socket } from "socket.io-client";
+
+export type DeviceInfo = {
+  name?: string;
+  ua?: string;
+  platform?: string;
+};
+
+export type SignalData =
+  | { kind: "offer"; payload: RTCSessionDescriptionInit }
+  | { kind: "answer"; payload: RTCSessionDescriptionInit }
+  | { kind: "candidate"; payload: RTCIceCandidateInit };
+
+const SIGNALING_PORT = "3003";
+
+export class SignalingClient {
+  private socket: Socket;
+
+  // Single-consumer event callbacks (assigned by the React hook).
+  onConnect?: () => void;
+  onDisconnect?: () => void;
+  onSessionCreated?: (payload: { sessionId: string; createdAt: number }) => void;
+  onSessionJoined?: (payload: { sessionId: string; sender: DeviceInfo }) => void;
+  onPeerJoined?: (payload: { receiver: DeviceInfo }) => void;
+  onPeerLeft?: () => void;
+  onSignal?: (data: SignalData) => void;
+  onSessionExpired?: () => void;
+  onError?: (message: string) => void;
+
+  constructor() {
+    // Caddy gateway: path "/" + ?XTransformPort=3003 routes to the signaling server.
+    this.socket = io(`/?XTransformPort=${SIGNALING_PORT}`, {
+      path: "/",
+      transports: ["websocket", "polling"],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
+      timeout: 10000,
+      forceNew: true,
+    });
+
+    this.socket.on("connect", () => this.onConnect?.());
+    this.socket.on("disconnect", () => this.onDisconnect?.());
+
+    this.socket.on("session-created", (p: { sessionId: string; createdAt: number }) =>
+      this.onSessionCreated?.(p),
+    );
+    this.socket.on("session-joined", (p: { sessionId: string; sender: DeviceInfo }) =>
+      this.onSessionJoined?.(p),
+    );
+    this.socket.on("peer-joined", (p: { receiver: DeviceInfo }) => this.onPeerJoined?.(p));
+    this.socket.on("peer-left", () => this.onPeerLeft?.());
+    this.socket.on("session-expired", () => this.onSessionExpired?.());
+    this.socket.on("signal", (p: { data: SignalData }) => this.onSignal?.(p.data));
+    this.socket.on("error", (p: { message: string }) => this.onError?.(p.message));
+  }
+
+  get connected() {
+    return this.socket.connected;
+  }
+
+  /** Sender: create (or re-create) a session and become its sender. */
+  createSession(sessionId: string, device: DeviceInfo) {
+    this.socket.emit("create-session", { sessionId, device });
+  }
+
+  /** Receiver: join an existing session as the receiver. */
+  joinSession(sessionId: string, device: DeviceInfo) {
+    this.socket.emit("join-session", { sessionId, device });
+  }
+
+  /** Relay a WebRTC signaling message (offer / answer / ICE candidate). */
+  sendSignal(sessionId: string, data: SignalData) {
+    this.socket.emit("signal", { sessionId, data });
+  }
+
+  leaveSession(sessionId: string) {
+    this.socket.emit("leave-session", { sessionId });
+  }
+
+  disconnect() {
+    this.socket.removeAllListeners();
+    this.socket.disconnect();
+  }
+}

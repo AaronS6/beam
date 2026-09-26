@@ -1,0 +1,299 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+/* ============================================================
+   Beam — Design System
+   Apple-tier. One accent: the "beam" gradient (#0A84FF → #7B61FF).
+   Everything else neutral. Calm, spacious, restrained.
+   ============================================================ */
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-chart-5: var(--chart-5);
+  --color-chart-4: var(--chart-4);
+  --color-chart-3: var(--chart-3);
+  --color-chart-2: var(--chart-2);
+  --color-chart-1: var(--chart-1);
+  --color-ring: var(--ring);
+  --color-input: var(--input);
+  --color-border: var(--border);
+  --color-destructive: var(--destructive);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent: var(--accent);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-muted: var(--muted);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-secondary: var(--secondary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary: var(--primary);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-popover: var(--popover);
+  --color-card-foreground: var(--card-foreground);
+  --color-card: var(--card);
+  --radius-sm: calc(var(--radius) - 6px);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+:root {
+  /* Apple light palette */
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", system-ui, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+
+  --radius: 1rem; /* 16px base → cards/buttons 16px, QR frame uses explicit 24px */
+
+  --background: #FAFAFA;
+  --foreground: #1D1D1F;
+  --card: #FFFFFF;
+  --card-foreground: #1D1D1F;
+  --popover: #FFFFFF;
+  --popover-foreground: #1D1D1F;
+  --primary: #1D1D1F;
+  --primary-foreground: #FFFFFF;
+  --secondary: #F5F5F7;
+  --secondary-foreground: #1D1D1F;
+  --muted: #F5F5F7;
+  --muted-foreground: #6E6E73;
+  --accent: #F5F5F7;
+  --accent-foreground: #1D1D1F;
+  --destructive: #FF3B30;
+  --destructive-foreground: #FFFFFF;
+  --border: #E5E5E7;
+  --input: #E5E5E7;
+  --ring: #0A84FF;
+  --chart-1: #0A84FF;
+  --chart-2: #7B61FF;
+  --chart-3: #34C759;
+  --chart-4: #FF9500;
+  --chart-5: #FF3B30;
+  --sidebar: #FFFFFF;
+  --sidebar-foreground: #1D1D1F;
+  --sidebar-primary: #1D1D1F;
+  --sidebar-primary-foreground: #FFFFFF;
+  --sidebar-accent: #F5F5F7;
+  --sidebar-accent-foreground: #1D1D1F;
+  --sidebar-border: #E5E5E7;
+  --sidebar-ring: #0A84FF;
+
+  /* The beam gradient — the single accent */
+  --beam-from: #0A84FF;
+  --beam-to: #7B61FF;
+  --beam-gradient: linear-gradient(135deg, #0A84FF 0%, #7B61FF 100%);
+}
+
+.dark {
+  /* Apple dark palette — true black background */
+  --background: #000000;
+  --foreground: #F5F5F7;
+  --card: #1C1C1E;
+  --card-foreground: #F5F5F7;
+  --popover: #1C1C1E;
+  --popover-foreground: #F5F5F7;
+  --primary: #F5F5F7;
+  --primary-foreground: #000000;
+  --secondary: #1C1C1E;
+  --secondary-foreground: #F5F5F7;
+  --muted: #2C2C2E;
+  --muted-foreground: #A1A1A6;
+  --accent: #2C2C2E;
+  --accent-foreground: #F5F5F7;
+  --destructive: #FF453A;
+  --destructive-foreground: #FFFFFF;
+  --border: #2C2C2E;
+  --input: #2C2C2E;
+  --ring: #0A84FF;
+  --chart-1: #0A84FF;
+  --chart-2: #7B61FF;
+  --chart-3: #30D158;
+  --chart-4: #FF9F0A;
+  --chart-5: #FF453A;
+  --sidebar: #1C1C1E;
+  --sidebar-foreground: #F5F5F7;
+  --sidebar-primary: #F5F5F7;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #2C2C2E;
+  --sidebar-accent-foreground: #F5F5F7;
+  --sidebar-border: #2C2C2E;
+  --sidebar-ring: #0A84FF;
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/40;
+  }
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: var(--font-sans);
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    letter-spacing: -0.011em;
+  }
+  /* Soft blue focus ring — never remove focus indication entirely */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--beam-from) 22%, transparent);
+  }
+}
+
+/* ============================================================
+   Beam gradient utilities
+   ============================================================ */
+@layer utilities {
+  .bg-beam {
+    background-image: var(--beam-gradient);
+  }
+  .text-beam {
+    background-image: var(--beam-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .border-beam {
+    border-image: var(--beam-gradient) 1;
+  }
+  /* Subtle elevation shadow for floating cards (QR frame etc.) */
+  .shadow-beam {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.04),
+      0 8px 24px rgba(0, 0, 0, 0.06),
+      0 0 0 1px rgba(229, 229, 231, 0.6);
+  }
+  .dark .shadow-beam {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 12px 40px rgba(0, 0, 0, 0.5),
+      0 0 0 1px rgba(44, 44, 46, 0.8);
+  }
+  /* Beam glow halo behind the QR frame */
+  .beam-glow {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--beam-from) 30%, transparent),
+      0 0 40px 4px color-mix(in srgb, var(--beam-from) 28%, transparent),
+      0 0 80px 12px color-mix(in srgb, var(--beam-to) 22%, transparent);
+  }
+
+  /* Custom scrollbar for long file lists */
+  .scroll-beam {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+  .scroll-beam::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .scroll-beam::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scroll-beam::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 999px;
+  }
+  .scroll-beam::-webkit-scrollbar-thumb:hover {
+    background: var(--muted-foreground);
+  }
+}
+
+/* ============================================================
+   Motion — calm, deliberate. Reduced-motion always respected.
+   ============================================================ */
+
+/* AirDrop-style radar pulse around the QR frame while waiting for a device */
+@keyframes beam-pulse {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+  100% {
+    transform: scale(1.35);
+    opacity: 0;
+  }
+}
+.animate-beam-pulse {
+  animation: beam-pulse 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+/* Slow rotating conic border glow — the "beam" sweeping the QR frame */
+@keyframes beam-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.animate-beam-spin {
+  animation: beam-spin 6s linear infinite;
+}
+
+/* Soft breathing opacity for the waiting status dot */
+@keyframes beam-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+.animate-beam-breathe {
+  animation: beam-breathe 2.2s ease-in-out infinite;
+}
+
+/* Calm checkmark draw for the complete state */
+@keyframes beam-check {
+  0% { stroke-dashoffset: 48; }
+  100% { stroke-dashoffset: 0; }
+}
+.animate-beam-check {
+  stroke-dasharray: 48;
+  stroke-dashoffset: 48;
+  animation: beam-check 0.5s 0.1s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+}
+
+/* Cross-fade + soft scale for state transitions */
+@keyframes beam-fade-in {
+  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-beam-fade {
+  animation: beam-fade-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* Progress bar shimmer when indeterminate */
+@keyframes beam-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(250%); }
+}
+.animate-beam-shimmer {
+  animation: beam-shimmer 1.4s ease-in-out infinite;
+}
+
+/* Reduced motion — disable looping / decorative animation */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

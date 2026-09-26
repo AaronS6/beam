@@ -1,0 +1,14 @@
+{
+  "name": "beam-signaling-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Beam WebRTC signaling server — relays SDP offer/answer + ICE candidates between two paired devices. Never touches file bytes.",
+  "scripts": {
+    "dev": "bun --hot index.ts",
+    "start": "bun index.ts"
+  },
+  "dependencies": {
+    "socket.io": "^4.8.4"
+  }
+}
