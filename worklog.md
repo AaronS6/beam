@@ -411,3 +411,43 @@ Stage Summary:
 - New files: src/components/beam/{drag-overlay,file-composer}.tsx.
 - Modified: src/app/globals.css (10 new keyframes), src/components/beam/{sender-panel,beam-app}.tsx.
 - Removed: src/components/beam/file-dropzone.tsx (superseded by file-composer).
+
+---
+Task ID: dark-only-and-stop-floating
+Agent: main (user: "stop floating icon, remove light mode it's ugly, only dark mode, make it look better like wetransfer")
+Task: Remove light mode entirely (dark-only), stop the cloud icon floating, restyle to WeTransfer-style dark charcoal + coral
+
+Work Log:
+USER COMPLAINTS ADDRESSED:
+1. "cloud icon make it stop floating" → removed the `animate-beam-float` class from the file-composer icon; it's now static.
+2. "light mode looks SO SO SO UGLY WHY IS THE BACKGROUND SO BRIGHT JUST REMOVE LIGHT MODE. ONLY HAVE DARK MODE" → killed light mode entirely. ThemeProvider now uses `forcedTheme="dark" enableSystem={false}` — html is always class="dark", no toggle, no system detection. Removed the ThemeToggle button from the nav entirely.
+3. "make the site look better more animations, design like wetransfer.com" → rebuilt the palette to WeTransfer's dark language.
+
+NEW DARK-ONLY PALETTE (globals.css :root, .dark block deleted since :root IS dark now):
+- background #14100E (deep warm charcoal-near-black, not the old bright coral, not the old brown)
+- card #1F1814 (elevated warm dark surface — the floating card)
+- primary/accent #FF6B4A (confident warm coral — the single accent)
+- foreground #F5EDE6 (warm off-white text)
+- border #3A2E26 (warm dark hairline)
+- The old `:root` (coral light) + `.dark` (brown) blocks were REPLACED with one dark-only `:root`.
+- BackgroundDecor reskinned: subtler warm coral/pink/amber radial glows at ~15-25% opacity on the charcoal (was bright coral blobs), + dotted texture at 4% opacity.
+
+COMPONENT RESTYLES (white-on-coral → dark-on-charcoal):
+- nav.tsx: removed ThemeToggle import + button; logo mark uses coral gradient; nav links use text-muted-foreground on bg-secondary hover.
+- beam-app.tsx hero: pill badge uses border-border/bg-card/text-muted-foreground (was white-on-coral); headline text-foreground (was text-white); subcopy text-muted-foreground.
+- sections.tsx: cards use border-border/bg-card (was white/10 glassmorphic on coral); icons bg-beam text-white; staggered animate-beam-up entrance with delay.
+- footer.tsx: text-muted-foreground on bg-background/40 (was white on coral).
+- sender-panel.tsx: all below-stage chips (Copy link, countdown, Path B badge, Cancel buttons) changed from border-white/20 bg-white/10 text-white → border-border bg-card text-foreground / text-muted-foreground.
+- file-composer.tsx: icon no longer has animate-beam-float (static).
+
+E2E VERIFICATION (agent-browser):
+- html class = "dark" (forced, verified). No theme toggle button present (verified "no toggle (good)"). Cloud icon static (verified "icon static (good)").
+- VLM confirms: "deep, rich dark charcoal background… warm coral accent… floating dark card… massive bold headline… WeTransfer-style: modern, sleek, confident, human. Light mode appears completely absent."
+- Path A transfer still works end-to-end in dark-only: All yours, 100%, Direct badge, zero console errors.
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- Light mode is GONE. Forced dark-only via next-themes forcedTheme.
+- Cloud icon no longer floats — static.
+- Palette rebuilt to WeTransfer-style dark charcoal + single coral accent (not the bright coral page, not the brown).
+- All coral-bg white-text assumptions cleaned up across nav/hero/sections/footer/sender-panel.

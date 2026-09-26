@@ -201,23 +201,23 @@ export function SenderPanel({
       <div className="mt-6 w-full max-w-[480px]">
         {(phase === "waiting" || phase === "connected") && (
           <div className="flex flex-col items-center gap-3 text-center">
-            <div className="flex items-center gap-2 text-[15px] font-medium text-white">
-              <span className="h-2 w-2 animate-beam-breathe rounded-full bg-white" />
+            <div className="flex items-center gap-2 text-[15px] font-medium text-foreground">
+              <span className="h-2 w-2 animate-beam-breathe rounded-full bg-primary" />
               {storeMode ? "Stored — waiting for them to grab it" : "Waiting for a device to connect"}
             </div>
             <div className="flex flex-wrap items-center justify-center gap-3 text-xs">
               <button
                 type="button"
                 onClick={handleCopy}
-                className="inline-flex items-center gap-1.5 rounded-full border border-white/20 bg-white/10 px-3 py-1.5 font-medium text-white backdrop-blur-sm transition-transform active:scale-[0.97] hover:bg-white/20"
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 font-medium text-foreground backdrop-blur-sm transition-transform active:scale-[0.97] hover:bg-secondary"
               >
                 {copied ? <CheckIcon className="h-3.5 w-3.5" strokeWidth={2} /> : <Link2 className="h-3.5 w-3.5" strokeWidth={2} />}
                 {copied ? "Copied" : "Copy link"}
               </button>
-              <PathCountdown expiresAt={pathExpiry} storeMode={storeMode} className="text-white/80" />
+              <PathCountdown expiresAt={pathExpiry} storeMode={storeMode} className="text-muted-foreground" />
             </div>
             {storeMode && (
-              <div className="inline-flex items-center gap-1.5 rounded-full border border-white/15 bg-white/10 px-3 py-1 text-[11px] font-medium text-white/80">
+              <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] font-medium text-muted-foreground">
                 <Server className="h-3 w-3" strokeWidth={2} />
                 Path B · encrypted server storage
               </div>
@@ -226,7 +226,7 @@ export function SenderPanel({
         )}
 
         {phase === "transferring" && (
-          <div className="mb-4 flex items-center justify-between text-sm font-medium text-white">
+          <div className="mb-4 flex items-center justify-between text-sm font-medium text-foreground">
             <span>{formatBytes(receivedBytes)} of {formatBytes(totalBytes)}</span>
             <span>{isFinite(remaining) ? `~${formatEta(remaining)} left` : formatSpeed(speed)}</span>
           </div>
@@ -275,7 +275,7 @@ export function SenderPanel({
             <button
               type="button"
               onClick={onReset}
-              className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-5 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-transform active:scale-[0.97] hover:bg-white/20"
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
             >
               <X className="h-4 w-4" strokeWidth={2} /> Cancel
             </button>
@@ -284,7 +284,7 @@ export function SenderPanel({
             <button
               type="button"
               onClick={onCancel}
-              className="inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-5 py-2.5 text-sm font-semibold text-white backdrop-blur-sm transition-transform active:scale-[0.97] hover:bg-white/20"
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
             >
               <X className="h-4 w-4" strokeWidth={2} /> Cancel transfer
             </button>

@@ -3,27 +3,29 @@
 import * as React from "react";
 
 /**
- * BackgroundDecor — soft abstract blobs floating behind the central card.
- * Adds warmth + a hand-made feel without cluttering. Purely decorative.
+ * BackgroundDecor — soft warm glows drifting behind the central card on the
+ * dark charcoal background. Subtle, atmospheric — WeTransfer-style depth.
  */
 export function BackgroundDecor() {
   return (
     <div aria-hidden className="pointer-events-none absolute inset-0 overflow-hidden">
-      {/* Soft blurred blobs in warm tones drifting slowly */}
+      {/* Coral glow top-left */}
       <div
-        className="animate-beam-drift absolute -left-20 top-10 h-72 w-72 rounded-full opacity-40 blur-3xl"
-        style={{ background: "radial-gradient(circle, #FFD9CC 0%, transparent 70%)" }}
+        className="animate-beam-drift absolute -left-32 -top-20 h-96 w-96 rounded-full opacity-25 blur-3xl"
+        style={{ background: "radial-gradient(circle, #FF6B4A 0%, transparent 70%)" }}
       />
+      {/* Pink glow top-right */}
       <div
-        className="animate-beam-drift absolute -right-24 top-40 h-80 w-80 rounded-full opacity-30 blur-3xl"
+        className="animate-beam-drift absolute -right-32 top-32 h-[28rem] w-[28rem] rounded-full opacity-20 blur-3xl"
         style={{ background: "radial-gradient(circle, #FF4D8D 0%, transparent 70%)", animationDelay: "3s" }}
       />
+      {/* Warm amber glow bottom */}
       <div
-        className="animate-beam-drift absolute bottom-0 left-1/3 h-64 w-64 rounded-full opacity-25 blur-3xl"
-        style={{ background: "radial-gradient(circle, #FFB59E 0%, transparent 70%)", animationDelay: "6s" }}
+        className="animate-beam-drift absolute bottom-0 left-1/4 h-80 w-80 rounded-full opacity-15 blur-3xl"
+        style={{ background: "radial-gradient(circle, #FFB37C 0%, transparent 70%)", animationDelay: "6s" }}
       />
-      {/* Subtle dotted texture overlay for warmth */}
-      <div className="texture-dots absolute inset-0 opacity-30" />
+      {/* Subtle dotted texture overlay */}
+      <div className="texture-dots absolute inset-0 opacity-[0.04]" />
     </div>
   );
 }

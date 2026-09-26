@@ -66,8 +66,9 @@ export function FileComposer({
 
   return (
     <div className="flex flex-col px-7 pb-7 pt-8">
-      {/* Big floating icon */}
-      <div className="animate-beam-float mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-[26px] shadow-float"
+      {/* Icon (static — no floating) */}
+      <div
+        className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-[26px] shadow-float"
         style={{ background: "var(--beam-gradient)" }}
       >
         {mode === "files" ? (

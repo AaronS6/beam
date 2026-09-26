@@ -28,27 +28,28 @@ export function HowItWorks() {
   return (
     <section id="how-it-works" className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
       <div className="mb-12 sm:mb-16">
-        <h2 className="text-[30px] font-bold leading-tight tracking-tight text-white sm:text-[40px]">
+        <h2 className="text-[30px] font-bold leading-tight tracking-tight text-foreground sm:text-[40px]">
           Three steps. No sign-up, no fuss.
         </h2>
-        <p className="mt-3 max-w-[52ch] text-[17px] leading-relaxed text-white/80">
+        <p className="mt-3 max-w-[52ch] text-[17px] leading-relaxed text-muted-foreground">
           Works between any two devices with a browser and a camera — Android, iPhone, laptop, desktop, any mix you like.
         </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-3 sm:gap-5">
-        {STEPS.map((s) => (
+        {STEPS.map((s, i) => (
           <div
             key={s.n}
-            className="group rounded-3xl border border-white/15 bg-white/10 p-6 backdrop-blur-sm transition-all duration-300 hover:-translate-y-1 hover:bg-white/15"
+            className="group animate-beam-up rounded-3xl border border-border bg-card p-6 transition-all duration-300 hover:-translate-y-1 hover:border-primary/40"
+            style={{ animationDelay: `${i * 80}ms` }}
           >
             <div className="mb-5 flex items-center justify-between">
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-white text-primary shadow-sm transition-transform duration-300 group-hover:scale-105">
+              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-beam text-white shadow-sm transition-transform duration-300 group-hover:scale-105">
                 <s.icon className="h-5 w-5" strokeWidth={1.75} />
               </span>
-              <span className="text-sm font-semibold tabular-nums text-white/50">{s.n}</span>
+              <span className="text-sm font-semibold tabular-nums text-muted-foreground/50">{s.n}</span>
             </div>
-            <h3 className="text-xl font-bold text-white">{s.title}</h3>
-            <p className="mt-2 text-[15px] leading-relaxed text-white/80">{s.body}</p>
+            <h3 className="text-xl font-bold text-foreground">{s.title}</h3>
+            <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{s.body}</p>
           </div>
         ))}
       </div>
@@ -61,13 +62,13 @@ export function Privacy() {
     <section id="privacy" className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
       <div className="grid gap-10 sm:grid-cols-[1fr_1.1fr] sm:gap-16">
         <div>
-          <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-white/15 backdrop-blur-sm">
-            <ShieldCheck className="h-6 w-6 text-white" strokeWidth={1.75} />
+          <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-beam text-white">
+            <ShieldCheck className="h-6 w-6" strokeWidth={1.75} />
           </div>
-          <h2 className="text-[30px] font-bold leading-tight tracking-tight text-white sm:text-[40px]">
+          <h2 className="text-[30px] font-bold leading-tight tracking-tight text-foreground sm:text-[40px]">
             Your files don't pass through us.
           </h2>
-          <p className="mt-4 max-w-[52ch] text-[17px] leading-relaxed text-white/80">
+          <p className="mt-4 max-w-[52ch] text-[17px] leading-relaxed text-muted-foreground">
             Once two devices pair, they open a direct encrypted connection and send the bytes between themselves. Our server only helps them find each other — it carries setup, never your files.
           </p>
         </div>
@@ -76,14 +77,18 @@ export function Privacy() {
             { icon: Zap, t: "Peer-to-peer by default", d: "Files flow directly from one device to the other over WebRTC, encrypted end to end with DTLS." },
             { icon: Lock, t: "Nothing is stored", d: "There's no upload bucket and no retention. Close the tab and the session is gone for good." },
             { icon: Clock, t: "Links expire fast", d: "A session self-destructs after 5 minutes if no one connects — or the instant the file is grabbed, whichever comes first." },
-          ].map((item) => (
-            <li key={item.t} className="flex items-start gap-4 rounded-2xl border border-white/10 bg-white/10 p-4 backdrop-blur-sm">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white/15">
-                <item.icon className="h-5 w-5 text-white" strokeWidth={1.75} />
+          ].map((item, i) => (
+            <li
+              key={item.t}
+              className="animate-beam-up flex items-start gap-4 rounded-2xl border border-border bg-card p-4"
+              style={{ animationDelay: `${i * 80}ms` }}
+            >
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-beam text-white">
+                <item.icon className="h-5 w-5" strokeWidth={1.75} />
               </span>
               <div>
-                <p className="text-[16px] font-semibold text-white">{item.t}</p>
-                <p className="mt-0.5 text-[14px] leading-relaxed text-white/80">{item.d}</p>
+                <p className="text-[16px] font-semibold text-foreground">{item.t}</p>
+                <p className="mt-0.5 text-[14px] leading-relaxed text-muted-foreground">{item.d}</p>
               </div>
             </li>
           ))}

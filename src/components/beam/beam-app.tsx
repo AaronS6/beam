@@ -107,15 +107,15 @@ export function BeamApp() {
         {/* Hero */}
         <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-10 text-center sm:px-8 sm:pb-20 sm:pt-14">
           <div className="animate-beam-pop">
-            <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-white/80 backdrop-blur-sm">
-              <span className="h-1.5 w-1.5 animate-beam-breathe rounded-full bg-white" />
+            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-semibold text-muted-foreground backdrop-blur-sm">
+              <span className="h-1.5 w-1.5 animate-beam-breathe rounded-full bg-primary" />
               Files that go straight from you to them
             </p>
-            <h1 className="text-balance text-[40px] font-extrabold leading-[1.02] tracking-tight text-white sm:text-[56px] lg:text-[68px]">
+            <h1 className="text-balance text-[40px] font-extrabold leading-[1.02] tracking-tight text-foreground sm:text-[56px] lg:text-[68px]">
               Just drop your files<br className="hidden sm:block" /> and{" "}
               <span className="text-beam-animate">scan.</span>
             </h1>
-            <p className="mx-auto mt-4 max-w-[46ch] text-[16px] leading-relaxed text-white/80 sm:text-[18px]">
+            <p className="mx-auto mt-5 max-w-[46ch] text-[16px] leading-relaxed text-muted-foreground sm:text-[18px]">
               They go straight to the other device — peer-to-peer, encrypted, gone the moment they land. No app, no account, no servers in the middle.
             </p>
           </div>

@@ -57,86 +57,47 @@
   /* Generous radius — 24px on the main card, 16px on buttons/chips */
   --radius: 1.5rem;
 
-  /* ---- LIGHT: warm coral full-bleed background, white floating card ---- */
-  --brand: #FF7A5C;            /* confident warm coral — the page */
-  --brand-soft: #FFD9CC;       /* tint for subtle decoration */
-  --brand-deep: #E85D3C;       /* deeper coral — accent for buttons on white */
+  /* ---- DARK-ONLY (no light mode). WeTransfer-style deep charcoal with
+         a confident coral accent. The background is the main character. ---- */
+  --brand: #FF6B4A;            /* confident warm coral — the accent */
+  --brand-soft: #2A1A14;       /* deep warm tint for decoration */
+  --brand-deep: #FF8A6E;       /* lighter coral — buttons on dark */
 
-  --background: #FF7A5C;       /* full-bleed coral */
-  --foreground: #2A1712;       /* warm near-black for text on the card */
-  --card: #FFFFFF;             /* the floating card */
-  --card-foreground: #2A1712;
-  --popover: #FFFFFF;
-  --popover-foreground: #2A1712;
-  --primary: #E85D3C;          /* primary button = deeper coral */
-  --primary-foreground: #FFFFFF;
-  --secondary: #FBF1EC;        /* warm off-white chip */
-  --secondary-foreground: #2A1712;
-  --muted: #FBF1EC;
-  --muted-foreground: #8A6A5E; /* warm gray secondary text */
-  --accent: #FBF1EC;
-  --accent-foreground: #2A1712;
-  --destructive: #D64545;
+  --background: #14100E;       /* deep charcoal-near-black, warm not blue */
+  --foreground: #F5EDE6;       /* warm off-white text */
+  --card: #1F1814;             /* elevated warm dark surface — the floating card */
+  --card-foreground: #F5EDE6;
+  --popover: #1F1814;
+  --popover-foreground: #F5EDE6;
+  --primary: #FF6B4A;          /* coral primary button */
+  --primary-foreground: #1A0D08;
+  --secondary: #2A201A;        /* darker warm chip */
+  --secondary-foreground: #F5EDE6;
+  --muted: #2A201A;
+  --muted-foreground: #9C8A7E; /* warm gray secondary text */
+  --accent: #2A201A;
+  --accent-foreground: #F5EDE6;
+  --destructive: #FF5A5A;
   --destructive-foreground: #FFFFFF;
-  --border: #F0E2DA;           /* warm hairline */
-  --input: #F0E2DA;
-  --ring: #E85D3C;
-  --chart-1: #E85D3C;
+  --border: #3A2E26;           /* warm dark hairline */
+  --input: #3A2E26;
+  --ring: #FF6B4A;
+  --chart-1: #FF6B4A;
   --chart-2: #FF9E7B;
   --chart-3: #C4451E;
   --chart-4: #FFD9CC;
-  --chart-5: #8A6A5E;
-  --sidebar: #FFFFFF;
-  --sidebar-foreground: #2A1712;
-  --sidebar-primary: #E85D3C;
-  --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #FBF1EC;
-  --sidebar-accent-foreground: #2A1712;
-  --sidebar-border: #F0E2DA;
-  --sidebar-ring: #E85D3C;
+  --chart-5: #9C8A7E;
+  --sidebar: #1F1814;
+  --sidebar-foreground: #F5EDE6;
+  --sidebar-primary: #FF6B4A;
+  --sidebar-primary-foreground: #1A0D08;
+  --sidebar-accent: #2A201A;
+  --sidebar-accent-foreground: #F5EDE6;
+  --sidebar-border: #3A2E26;
+  --sidebar-ring: #FF6B4A;
 
   /* The brand gradient — coral → warm pink, used for the QR glow + progress */
-  --beam-gradient: linear-gradient(135deg, #FF7A5C 0%, #FF4D8D 100%);
-}
-
-.dark {
-  /* ---- DARK: deep warm espresso so the coral still reads through ---- */
-  --brand: #FF7A5C;
-  --brand-soft: #5A2A1C;
-  --brand-deep: #FF9374;
-
-  --background: #2A1812;        /* deep warm brown, not pure black */
-  --foreground: #FBF3EE;
-  --card: #3A251C;              /* warm dark surface card */
-  --card-foreground: #FBF3EE;
-  --popover: #3A251C;
-  --popover-foreground: #FBF3EE;
-  --primary: #FF9374;           /* lighter coral pops on dark */
-  --primary-foreground: #2A1712;
-  --secondary: #4A2F25;
-  --secondary-foreground: #FBF3EE;
-  --muted: #4A2F25;
-  --muted-foreground: #C9A99A;
-  --accent: #4A2F25;
-  --accent-foreground: #FBF3EE;
-  --destructive: #FF6B6B;
-  --destructive-foreground: #FFFFFF;
-  --border: #4A2F25;
-  --input: #4A2F25;
-  --ring: #FF9374;
-  --chart-1: #FF9374;
-  --chart-2: #FFB59E;
-  --chart-3: #E85D3C;
-  --chart-4: #5A2A1C;
-  --chart-5: #C9A99A;
-  --sidebar: #3A251C;
-  --sidebar-foreground: #FBF3EE;
-  --sidebar-primary: #FF9374;
-  --sidebar-primary-foreground: #2A1712;
-  --sidebar-accent: #4A2F25;
-  --sidebar-accent-foreground: #FBF3EE;
-  --sidebar-border: #4A2F25;
-  --sidebar-ring: #FF9374;
+  --beam-gradient: linear-gradient(135deg, #FF6B4A 0%, #FF4D8D 100%);
 }
 
 @layer base {
