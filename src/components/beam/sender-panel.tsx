@@ -21,6 +21,7 @@ import { FileDropzone } from "./file-dropzone";
 import { FileRow } from "./file-row";
 import { ProgressRing } from "./progress-ring";
 import { SessionCountdown } from "./session-countdown";
+import { QualityBars } from "./quality-bars";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
@@ -32,6 +33,8 @@ export function SenderPanel({
   onCopyLink,
   onRemoveFile,
   onAddMoreFiles,
+  onReorderFiles,
+  onPasteText,
 }: {
   state: SessionState;
   onFiles: (files: File[]) => void;
@@ -40,8 +43,10 @@ export function SenderPanel({
   onCopyLink: () => Promise<boolean>;
   onRemoveFile: (id: string) => void;
   onAddMoreFiles: (files: File[]) => void;
+  onReorderFiles: (fromId: string, toId: string) => void;
+  onPasteText: (text: string) => void;
 }) {
-  const { phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice, createdAt } = state;
+  const { phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice, createdAt, quality } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
 
@@ -62,6 +67,24 @@ export function SenderPanel({
     onAddMoreFiles(Array.from(list));
   };
 
+  // Drag-reorder state (waiting queue)
+  const [dragId, setDragId] = React.useState<string | null>(null);
+  const [overId, setOverId] = React.useState<string | null>(null);
+  const handleDragStart = (id: string) => (e: React.DragEvent) => {
+    setDragId(id);
+    e.dataTransfer.effectAllowed = "move";
+  };
+  const handleDragOver = (id: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    if (dragId && dragId !== id) setOverId(id);
+  };
+  const handleDrop = (id: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    if (dragId && dragId !== id) onReorderFiles(dragId, id);
+    setDragId(null);
+    setOverId(null);
+  };
+
   const canEditQueue = phase === "waiting" || phase === "connected";
 
   return (
@@ -70,7 +93,7 @@ export function SenderPanel({
       <div className="w-full max-w-[320px]">
         {phase === "idle" && (
           <BeamStage>
-            <FileDropzone onFiles={onFiles} />
+            <FileDropzone onFiles={onFiles} onPasteText={onPasteText} />
           </BeamStage>
         )}
 
@@ -100,9 +123,12 @@ export function SenderPanel({
               <p className="mt-4 text-sm text-muted-foreground">
                 Sending to {peerDevice?.label ?? "device"}
               </p>
-              <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/50 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
-                <ShieldCheck className="h-3 w-3" strokeWidth={2} />
-                Encrypted · peer-to-peer
+              <div className="mt-3 flex items-center gap-2">
+                <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/50 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                  <ShieldCheck className="h-3 w-3" strokeWidth={2} />
+                  Encrypted · peer-to-peer
+                </div>
+                <QualityBars level={quality} />
               </div>
             </div>
           </BeamStage>
@@ -224,11 +250,19 @@ export function SenderPanel({
         {files.length > 0 && phase !== "done" && phase !== "expired" && (
           <div className="space-y-2">
             {files.map((f) => (
-              <FileRow
+              <div
                 key={f.id}
-                file={f}
-                onRemove={canEditQueue ? onRemoveFile : undefined}
-              />
+                className={`transition-opacity ${overId === f.id ? "opacity-60" : ""}`}
+              >
+                <FileRow
+                  file={f}
+                  onRemove={canEditQueue ? onRemoveFile : undefined}
+                  draggable={canEditQueue}
+                  onDragStart={canEditQueue ? handleDragStart(f.id) : undefined}
+                  onDragOver={canEditQueue ? handleDragOver(f.id) : undefined}
+                  onDrop={canEditQueue ? handleDrop(f.id) : undefined}
+                />
+              </div>
             ))}
             {canEditQueue && (
               <button
@@ -239,6 +273,11 @@ export function SenderPanel({
                 <FilePlus2 className="h-4 w-4" strokeWidth={2} />
                 Add more files
               </button>
+            )}
+            {canEditQueue && files.length > 1 && (
+              <p className="pt-1 text-center text-[11px] text-muted-foreground/60">
+                Drag to reorder · files send in the order shown
+              </p>
             )}
             <input
               ref={moreInputRef}

@@ -21,6 +21,8 @@ export function BeamApp() {
     copyLink,
     removeFile,
     addMoreFiles,
+    reorderFiles,
+    sendPastedText,
   } = useBeamSession(sessionIdParam);
 
   const isReceiver = state.mode === "receiver";
@@ -75,6 +77,21 @@ export function BeamApp() {
         {/* Hero */}
         <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-14 text-center sm:px-8 sm:pb-24 sm:pt-20">
           <div className="animate-beam-fade">
+            {/* Trust badge row */}
+            <div className="mb-7 flex items-center justify-center gap-2">
+              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-medium text-muted-foreground backdrop-blur-sm">
+                <span className="h-1.5 w-1.5 rounded-full bg-beam" aria-hidden />
+                Peer-to-peer
+              </span>
+              <span className="hidden text-muted-foreground/40 sm:inline">·</span>
+              <span className="hidden rounded-full px-2 py-1 text-xs font-medium text-muted-foreground sm:inline">
+                Encrypted
+              </span>
+              <span className="hidden text-muted-foreground/40 sm:inline">·</span>
+              <span className="hidden rounded-full px-2 py-1 text-xs font-medium text-muted-foreground sm:inline">
+                No account
+              </span>
+            </div>
             <h1 className="text-balance text-[34px] font-semibold leading-[1.06] tracking-tight text-foreground sm:text-[48px] lg:text-[60px]">
               Send files without the cables.
             </h1>
@@ -94,6 +111,8 @@ export function BeamApp() {
                 onCopyLink={copyLink}
                 onRemoveFile={removeFile}
                 onAddMoreFiles={addMoreFiles}
+                onReorderFiles={reorderFiles}
+                onPasteText={sendPastedText}
               />
             </div>
           </div>

@@ -11,13 +11,34 @@ import { formatBytes } from "@/lib/format";
  */
 export function FileDropzone({
   onFiles,
+  onPasteText,
 }: {
   onFiles: (files: File[]) => void;
+  onPasteText?: (text: string) => void;
 }) {
   const [mode, setMode] = React.useState<"files" | "text">("files");
   const [text, setText] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = React.useState(false);
+
+  // Global paste-to-send: when in files mode and not focused on the textarea,
+  // pasting text anywhere on the idle dropzone auto-switches to text mode.
+  React.useEffect(() => {
+    if (!onPasteText) return;
+    const onPaste = (e: ClipboardEvent) => {
+      // Only intercept when the user isn't typing in an input/textarea elsewhere.
+      const tag = (document.activeElement?.tagName ?? "").toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+      const text = e.clipboardData?.getData("text");
+      if (text && text.trim().length > 0) {
+        e.preventDefault();
+        setMode("text");
+        setText(text);
+      }
+    };
+    window.addEventListener("paste", onPaste);
+    return () => window.removeEventListener("paste", onPaste);
+  }, [onPasteText]);
 
   const handleFiles = (list: FileList | null) => {
     if (!list || list.length === 0) return;
@@ -27,14 +48,13 @@ export function FileDropzone({
   const sendText = () => {
     const value = text.trim();
     if (!value) return;
-    // Detect a sensible name: if it looks like a URL, call it "link.txt"; if it
-    // has a file extension already, keep it; else "snippet.txt".
+    if (onPasteText) {
+      onPasteText(value);
+      return;
+    }
+    // Fallback: build the File locally if no paste handler was supplied.
     let name = "snippet.txt";
     if (/^https?:\/\//i.test(value)) name = "link.txt";
-    else if (/^\S+\.[a-z0-9]{1,8}$/i.test(value.split("\n")[0])) {
-      const firstLine = value.split("\n")[0];
-      if (firstLine.includes(".")) name = firstLine.slice(0, 64);
-    }
     const file = new File([value], name, { type: "text/plain" });
     onFiles([file]);
   };
@@ -114,6 +134,11 @@ export function FileDropzone({
             <FilePlus2 className="h-4 w-4" strokeWidth={2} />
             Choose files
           </button>
+          {onPasteText && (
+            <p className="mt-3 text-xs text-muted-foreground/70">
+              or paste text anywhere to send it as a snippet
+            </p>
+          )}
           <input
             ref={inputRef}
             type="file"

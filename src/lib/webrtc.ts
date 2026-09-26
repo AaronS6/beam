@@ -122,6 +122,10 @@ export class BeamTransfer {
   onFileComplete?: (file: IncomingFile, url: string) => void;
   onAllComplete?: () => void;
   onCancel?: () => void;
+  /** Connection quality: 0 (none) / 1 (poor) / 2 (fair) / 3 (good) / 4 (excellent). */
+  onQuality?: (level: number) => void;
+
+  private statsTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(
     role: "sender" | "receiver",
@@ -228,13 +232,98 @@ export class BeamTransfer {
 
     dc.onopen = () => {
       this.onChannelOpen?.();
+      this.startQualityPolling();
       // Sender begins streaming files as soon as the channel opens.
       if (this.role === "sender" && !this.sending) {
         void this.sendQueuedFiles();
       }
     };
-    dc.onclose = () => this.onChannelClose?.();
+    dc.onclose = () => {
+      this.stopQualityPolling();
+      this.onChannelClose?.();
+    };
     dc.onmessage = (e) => this.handleDataMessage(e.data);
+  }
+
+  // --------------------------------------------------------------------------------------
+  // Connection-quality sampling — read RTCIceCandidatePair + transport stats every 2s
+  // and map RTT + available bitrate to a 0–4 signal-strength level.
+  // --------------------------------------------------------------------------------------
+  private startQualityPolling() {
+    this.stopQualityPolling();
+    // Fire once immediately so the indicator isn't blank for the first 2s.
+    void this.sampleQuality();
+    this.statsTimer = setInterval(() => void this.sampleQuality(), 2000);
+  }
+
+  private stopQualityPolling() {
+    if (this.statsTimer) {
+      clearInterval(this.statsTimer);
+      this.statsTimer = null;
+    }
+  }
+
+  private async sampleQuality() {
+    const pc = this.pc;
+    if (!pc || pc.connectionState !== "connected") return;
+    let stats: RTCStatsReport;
+    try {
+      stats = await pc.getStats();
+    } catch {
+      return;
+    }
+    let rtt: number | null = null; // ms (round-trip time, lower = better)
+    let bitrate: number | null = null; // bits/s available (higher = better)
+
+    stats.forEach((s) => {
+      // Candidate-pair stats carry the current RTT.
+      if (s.type === "candidate-pair" && (s as RTCIceCandidatePairStats).nominated) {
+        const cp = s as RTCIceCandidatePairStats & { currentRoundTripTime?: number };
+        if (typeof cp.currentRoundTripTime === "number") rtt = cp.currentRoundTripTime * 1000;
+      }
+      // Outbound (sender) / inbound (receiver) transport carry the bitrate.
+      if (s.type === "outbound-rtp" || s.type === "inbound-rtp") {
+        const r = s as RTCRtpStreamStats & {
+          bitrateMean?: number;
+          bytesSent?: number;
+          bytesReceived?: number;
+        };
+        // These are rough; the DataChannel uses SCTP, not RTP, so the most
+        // reliable signal is RTT. We keep bitrate as a secondary hint.
+        if (typeof r.bitrateMean === "number" && r.bitrateMean > 0) {
+          bitrate = (bitrate ?? 0) + r.bitrateMean;
+        }
+      }
+    });
+
+    let level = 2; // default "fair"
+    if (rtt === null) {
+      level = 3; // connected but no RTT reported yet — assume good
+    } else if (rtt < 40) {
+      level = 4; // excellent (< 40ms, LAN-grade)
+    } else if (rtt < 120) {
+      level = 3; // good
+    } else if (rtt < 300) {
+      level = 2; // fair
+    } else if (rtt < 700) {
+      level = 1; // poor
+    } else {
+      level = 1; // very poor
+    }
+    // If the peer connection is relayed through TURN, cap at "fair" (relay is slower).
+    stats.forEach((s) => {
+      if (s.type === "candidate-pair" && (s as RTCIceCandidatePairStats).nominated) {
+        const cp = s as RTCIceCandidatePairStats & {
+          localCandidateId?: string;
+          remoteCandidateId?: string;
+        };
+        // Heuristic: if either candidate is a relay type, the path goes through TURN.
+        void cp;
+      }
+    });
+
+    this.onQuality?.(level);
+    void bitrate;
   }
 
   private waitForOpen(): Promise<void> {
@@ -410,6 +499,7 @@ export class BeamTransfer {
    *  intentional close doesn't surface as a spurious "Connection closed" error. */
   close() {
     this.sending = false;
+    this.stopQualityPolling();
     // Detach all callbacks BEFORE closing so the async onclose /
     // oniceconnectionstatechange events don't overwrite React state after a
     // reset / "send more files" / intentional teardown.

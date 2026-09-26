@@ -32,17 +32,26 @@ export function FileRow({
   onSave,
   onRemove,
   onCopyText,
+  draggable,
+  onDragStart,
+  onDragOver,
+  onDrop,
 }: {
   file: FileItem;
   onSave?: (url: string, name: string) => void;
   onRemove?: (id: string) => void;
   onCopyText?: (text: string) => void;
+  draggable?: boolean;
+  onDragStart?: (e: React.DragEvent) => void;
+  onDragOver?: (e: React.DragEvent) => void;
+  onDrop?: (e: React.DragEvent) => void;
 }) {
   const pct = file.size > 0 ? Math.min(100, Math.round((file.received / file.size) * 100)) : 0;
   const done = file.status === "done";
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const hasText = done && !!file.text;
+  const hasImage = done && !!file.imageUrl;
 
   const handleCopy = () => {
     if (!file.text || !onCopyText) return;
@@ -54,16 +63,35 @@ export function FileRow({
   const isSnippet = file.name === "snippet.txt" || file.name === "link.txt";
 
   return (
-    <div className="rounded-2xl border border-border bg-card p-3.5 transition-colors">
+    <div
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={`rounded-2xl border border-border bg-card p-3.5 transition-colors ${
+        draggable ? "cursor-grab active:cursor-grabbing" : ""
+      }`}
+    >
       <div className="flex items-center gap-3">
-        {/* Type chip */}
-        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
-          {hasText ? (
-            <FileText className="h-5 w-5" strokeWidth={1.75} />
-          ) : (
-            <FileIcon className="h-5 w-5" strokeWidth={1.75} />
-          )}
-        </div>
+        {/* Type chip — or image thumbnail for received images */}
+        {hasImage ? (
+          <div className="h-11 w-11 shrink-0 overflow-hidden rounded-xl bg-secondary">
+            <img
+              src={file.imageUrl}
+              alt={file.name}
+              className="h-full w-full object-cover"
+              loading="lazy"
+            />
+          </div>
+        ) : (
+          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-secondary text-muted-foreground">
+            {hasText ? (
+              <FileText className="h-5 w-5" strokeWidth={1.75} />
+            ) : (
+              <FileIcon className="h-5 w-5" strokeWidth={1.75} />
+            )}
+          </div>
+        )}
 
         {/* Name + meta */}
         <div className="min-w-0 flex-1">
@@ -173,6 +201,32 @@ export function FileRow({
             <pre className="scroll-beam mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-words rounded-xl bg-secondary/60 p-3 text-[13px] leading-relaxed text-foreground">
               {file.text}
             </pre>
+          )}
+        </div>
+      )}
+
+      {/* Image preview (receiver, expandable) */}
+      {hasImage && (
+        <div className="mt-3 border-t border-border/70 pt-3">
+          <button
+            type="button"
+            onClick={() => setPreviewOpen((v) => !v)}
+            className="flex w-full items-center justify-between text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            <span>Preview image</span>
+            <ChevronDown
+              className={`h-3.5 w-3.5 transition-transform ${previewOpen ? "rotate-180" : ""}`}
+              strokeWidth={2}
+            />
+          </button>
+          {previewOpen && (
+            <div className="mt-2 overflow-hidden rounded-xl bg-secondary/40">
+              <img
+                src={file.imageUrl}
+                alt={file.name}
+                className="mx-auto max-h-72 w-auto max-w-full object-contain"
+              />
+            </div>
           )}
         </div>
       )}

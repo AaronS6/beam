@@ -29,6 +29,7 @@ export type FileItem = {
   status: "queued" | "transferring" | "done" | "error";
   url?: string;
   text?: string; // populated for small text-like files so the receiver can preview/copy
+  imageUrl?: string; // object URL for image files → receiver shows a thumbnail
 };
 
 export type Phase = TransferState | "expired";
@@ -45,6 +46,7 @@ export type SessionState = {
   speed: number; // bytes/sec
   error: string | null;
   createdAt: number | null; // epoch ms — session start, for the expiry countdown
+  quality: number; // 0..4 connection-quality signal-strength level
 };
 
 const INITIAL: SessionState = {
@@ -59,6 +61,7 @@ const INITIAL: SessionState = {
   speed: 0,
   error: null,
   createdAt: null,
+  quality: 0,
 };
 
 export function useBeamSession(sessionIdParam?: string | null) {
@@ -274,6 +277,40 @@ export function useBeamSession(sessionIdParam?: string | null) {
     });
   }, []);
 
+  /** Reorder the waiting queue (drag-reorder). from/to are file ids. */
+  const reorderFiles = useCallback((fromId: string, toId: string) => {
+    setState((s) => {
+      if (s.phase !== "waiting" && s.phase !== "connected") return s;
+      const from = s.files.findIndex((f) => f.id === fromId);
+      const to = s.files.findIndex((f) => f.id === toId);
+      if (from === -1 || to === -1 || from === to) return s;
+      const files = [...s.files];
+      const [moved] = files.splice(from, 1);
+      files.splice(to, 0, moved);
+      // Sync rawFilesRef to the same permutation.
+      const rawFrom = rawFilesRef.current[from];
+      const raws = [...rawFilesRef.current];
+      raws.splice(from, 1);
+      raws.splice(to, 0, rawFrom);
+      rawFilesRef.current = raws;
+      return { ...s, files };
+    });
+  }, []);
+
+  /** Paste-to-send: turn pasted text into a snippet file. Used by the global
+   *  paste listener on the idle dropzone. */
+  const sendPastedText = useCallback(
+    (text: string) => {
+      const value = text.trim();
+      if (!value) return;
+      let name = "snippet.txt";
+      if (/^https?:\/\//i.test(value)) name = "link.txt";
+      const file = new File([value], name, { type: "text/plain" });
+      beginSending([file]);
+    },
+    [beginSending],
+  );
+
   const reset = useCallback(() => {
     transferRef.current?.releaseAll();
     transferRef.current?.close();
@@ -316,8 +353,30 @@ export function useBeamSession(sessionIdParam?: string | null) {
   }, [state.qrUrl]);
 
   return useMemo(
-    () => ({ state, beginSending, reset, cancel, saveFile, copyLink, removeFile, addMoreFiles }),
-    [state, beginSending, reset, cancel, saveFile, copyLink, removeFile, addMoreFiles],
+    () => ({
+      state,
+      beginSending,
+      reset,
+      cancel,
+      saveFile,
+      copyLink,
+      removeFile,
+      addMoreFiles,
+      reorderFiles,
+      sendPastedText,
+    }),
+    [
+      state,
+      beginSending,
+      reset,
+      cancel,
+      saveFile,
+      copyLink,
+      removeFile,
+      addMoreFiles,
+      reorderFiles,
+      sendPastedText,
+    ],
   );
 }
 
@@ -370,6 +429,7 @@ function makeTransfer(
     });
   };
   t.onFailed = (reason) => patch({ phase: "error", error: reason });
+  t.onQuality = (level) => patch({ quality: level });
 
   t.onFileMeta = (files: IncomingFile[]) => {
     setState((s) => ({
@@ -417,6 +477,8 @@ function makeTransfer(
     // For small text-like files, read the content so the receiver can preview +
     // copy it inline (no forced download needed for a URL or code snippet).
     const isText = isTextLike(file.name, file.mime);
+    const isImage = isImageLike(file.name, file.mime);
+
     if (url && isText && file.size > 0 && file.size <= 256 * 1024) {
       fetch(url)
         .then((r) => r.text())
@@ -436,6 +498,17 @@ function makeTransfer(
             ),
           }));
         });
+    } else if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
+      // Images: keep the object URL for an inline thumbnail. (Object URL == blob URL,
+      // safe to use directly as <img src>.) Cap at 16MB to avoid burning memory.
+      setState((s) => ({
+        ...s,
+        files: s.files.map((f) =>
+          f.id === file.id
+            ? { ...f, status: "done" as const, received: f.size, url: url || f.url, imageUrl: url }
+            : f,
+        ),
+      }));
     } else {
       setState((s) => ({
         ...s,
@@ -470,4 +543,11 @@ function isTextLike(name: string, mime?: string): boolean {
     "rs", "java", "c", "cc", "cpp", "h", "hpp", "sql", "toml", "ini", "env",
     "log", "conf", "gitignore", "env",
   ].includes(ext);
+}
+
+/** True for image files we can show as an inline thumbnail. */
+function isImageLike(name: string, mime?: string): boolean {
+  if (mime && mime.startsWith("image/")) return true;
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"].includes(ext);
 }
