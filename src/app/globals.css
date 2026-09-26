@@ -271,6 +271,88 @@
 }
 .animate-beam-shimmer { animation: beam-shimmer 1.4s ease-in-out infinite; }
 
+/* ============================================================
+   NEW v3 animations — more fun, more life
+   ============================================================ */
+
+/* Springy card pop-in — overshoot then settle, like a real bounce */
+@keyframes beam-pop-in {
+  0% { opacity: 0; transform: translateY(24px) scale(0.92); }
+  60% { opacity: 1; transform: translateY(-6px) scale(1.02); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+.animate-beam-pop { animation: beam-pop-in 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+/* Staggered fade-up for list items */
+@keyframes beam-fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-beam-up { animation: beam-fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Animated gradient text shimmer — moves the coral gradient across the headline */
+@keyframes beam-gradient-move {
+  0% { background-position: 0% 50%; }
+  100% { background-position: 200% 50%; }
+}
+.text-beam-animate {
+  background-image: linear-gradient(90deg, #FF7A5C, #FF4D8D, #FF9374, #FF7A5C);
+  background-size: 200% auto;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: beam-gradient-move 6s linear infinite;
+}
+
+/* Button glow pulse — subtle expanding ring on hover-able primary CTAs */
+@keyframes beam-glow-pulse {
+  0%, 100% { box-shadow: 0 8px 24px -6px color-mix(in srgb, var(--brand-deep) 50%, transparent); }
+  50% { box-shadow: 0 12px 36px -4px color-mix(in srgb, var(--brand-deep) 70%, transparent); }
+}
+.animate-glow-pulse { animation: beam-glow-pulse 2.6s ease-in-out infinite; }
+
+/* Floating icon — gentle vertical bob */
+@keyframes beam-float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+.animate-beam-float { animation: beam-float 3.5s ease-in-out infinite; }
+
+/* Wiggle — playful shake for the drag overlay icon */
+@keyframes beam-wiggle {
+  0%, 100% { transform: rotate(-3deg); }
+  50% { transform: rotate(3deg); }
+}
+.animate-beam-wiggle { animation: beam-wiggle 1.8s ease-in-out infinite; }
+
+/* Drag overlay ring — scale + fade in when drag enters the window */
+@keyframes beam-overlay-in {
+  0% { opacity: 0; transform: scale(0.96); }
+  100% { opacity: 1; transform: scale(1); }
+}
+.animate-beam-overlay { animation: beam-overlay-in 0.28s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* Dash marching border for the drag overlay */
+@keyframes beam-dash {
+  to { stroke-dashoffset: -40; }
+}
+.animate-beam-dash { animation: beam-dash 1.2s linear infinite; }
+
+/* Confetti-ish tiny dot bounce for the complete state */
+@keyframes beam-bounce-in {
+  0% { opacity: 0; transform: scale(0) rotate(-30deg); }
+  60% { opacity: 1; transform: scale(1.15) rotate(8deg); }
+  100% { opacity: 1; transform: scale(1) rotate(0); }
+}
+.animate-beam-bounce { animation: beam-bounce-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+
+/* Scale-in for small chips/badges */
+@keyframes beam-scale-in {
+  from { opacity: 0; transform: scale(0.8); }
+  to { opacity: 1; transform: scale(1); }
+}
+.animate-beam-scale { animation: beam-scale-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
 /* Reduced motion — disable looping / decorative animation */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

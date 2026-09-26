@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { BeamQR } from "./beam-qr";
-import { FileDropzone } from "./file-dropzone";
+import { FileComposer } from "./file-composer";
 import { FileRow } from "./file-row";
 import { ProgressRing } from "./progress-ring";
 import { PathCountdown } from "./path-countdown";
@@ -92,7 +92,7 @@ export function SenderPanel({
       <div className="w-full max-w-[340px]">
         {phase === "idle" && (
           <BeamStage>
-            <FileDropzone
+            <FileComposer
               onFiles={onFiles}
               onPasteText={onPasteText}
               storeMode={storeMode}
@@ -103,7 +103,7 @@ export function SenderPanel({
 
         {(phase === "waiting" || phase === "connected") && qrUrl && (
           <BeamStage active={phase === "waiting"}>
-            <div className="flex flex-col items-center px-6 py-7">
+            <div key="waiting" className="animate-beam-pop flex flex-col items-center px-6 py-7">
               <BeamQR value={qrUrl} size={236} />
               <p className="mt-4 text-center text-sm font-medium text-muted-foreground">
                 {storeMode ? "Scan to grab them — link's good for 5 min" : "Scan to grab them"}
@@ -114,7 +114,7 @@ export function SenderPanel({
 
         {phase === "transferring" && (
           <BeamStage>
-            <div className="flex flex-col items-center px-6 py-8">
+            <div key="transferring" className="animate-beam-pop flex flex-col items-center px-6 py-8">
               <ProgressRing value={overall} size={168}>
                 <span className="text-3xl font-bold tabular-nums tracking-tight text-foreground">
                   {overall}<span className="text-lg text-muted-foreground">%</span>
@@ -138,7 +138,7 @@ export function SenderPanel({
 
         {phase === "reconnecting" && (
           <BeamStage>
-            <div className="flex flex-col items-center px-6 py-12">
+            <div key="reconnecting" className="animate-beam-pop flex flex-col items-center px-6 py-12">
               <div className="relative flex h-[168px] w-[168px] items-center justify-center">
                 <WifiOff className="h-10 w-10 text-muted-foreground" strokeWidth={1.5} />
                 <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
@@ -153,8 +153,8 @@ export function SenderPanel({
 
         {phase === "done" && (
           <BeamStage>
-            <div className="flex flex-col items-center px-6 py-10">
-              <div className="flex h-20 w-20 items-center justify-center rounded-full bg-primary">
+            <div key="done" className="flex flex-col items-center px-6 py-10">
+              <div className="animate-beam-bounce flex h-20 w-20 items-center justify-center rounded-full bg-primary">
                 <svg width="40" height="40" viewBox="0 0 48 48" fill="none">
                   <path d="M12 24.5 L20.5 33 L36 16" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="animate-beam-check" />
                 </svg>

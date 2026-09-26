@@ -364,3 +364,50 @@ Stage Summary:
 - New files: src/lib/storage-crypto.ts, src/lib/cleanup.ts, src/instrumentation.ts, src/app/api/beam/store/{route,meta,list,cleanup}/route.ts, src/components/beam/{background-decor,path-countdown,candidate-badge}.tsx, prisma StoredFile model.
 - Rewritten: src/lib/webrtc.ts (parallel channels), src/hooks/use-beam-session.ts (Path A+B + store mode), src/app/globals.css (warm palette), src/components/beam/{beam-logo,beam-stage,file-dropzone,file-row,sender-panel,receiver-panel,beam-app,nav,footer,sections}.tsx, README.md (full changelog + speed-reality section).
 - Removed: src/lib/history.ts (conflicted with ephemeral philosophy).
+
+---
+Task ID: ui-v3-make-it-pretty
+Agent: main (user: "make it look better, more visible store toggle, drag overlay only on drag, more animations")
+Task: Major UI/UX polish — kill always-visible dropzone, prominent Store toggle, window-level drag overlay, lots more animation
+
+Work Log:
+USER PAIN POINTS ADDRESSED:
+1. "Site looks ugly" → full visual polish pass.
+2. "Store temporarily toggle more visible" → was a buried checkbox at the bottom of the dropzone; now a big prominent two-option segmented card control ("Direct / Store 5 min") with icons, selected-state coral border + filled icon.
+3. "Only show dropdown when people are dragging files into the site" → removed the always-visible dropzone area entirely. Added a window-level DragOverlay that ONLY materializes while a drag is in progress (dragenter on window with Files type), with depth-counting so leaving a child doesn't prematurely hide it, and auto-hides on drop/dragleave.
+4. "More animations, modern/fun/sleek/clean/human" → 10 new keyframe animations.
+
+NEW ANIMATIONS (globals.css):
+- beam-pop-in: springy overshoot card entrance (cubic-bezier overshoot 1.56)
+- beam-fade-up: staggered list item reveal
+- beam-gradient-move + .text-beam-animate: animated coral→pink→coral gradient shimmer on the "scan." headline word
+- beam-glow-pulse: primary CTA button breathing glow ring
+- beam-float: gentle vertical bob on the hero icon
+- beam-wiggle: playful rotation on the drag overlay icon
+- beam-overlay-in: drag overlay scale+fade entrance
+- beam-dash: marching dashed border on the drag overlay
+- beam-bounce-in: confetti-ish bounce on the done checkmark
+- beam-scale-in: scale-in for chips/badges
+
+NEW COMPONENTS:
+- src/components/beam/drag-overlay.tsx — window-level drag overlay. Listens to dragenter/dragover/dragleave/drop on `window`, only fires when the dragged payload includes Files (so text drags don't trigger it). Depth-counts enter/leave so child elements don't flicker it. Renders a full-screen coral blur + a white floating upload icon (wiggle) + "Drop them anywhere" + "We'll grab them the moment you let go" + an animated marching-dashed SVG ring.
+- src/components/beam/file-composer.tsx — REPLACES the old file-dropzone.tsx (deleted). The idle card is now clean: floating animated coral icon, "Pick your files" headline, Files/Text pill toggle, BIG coral "Choose files" button (with glow-pulse + hover scale + icon rotate), and a prominent "HOW SHOULD THEY GO?" section with a two-card segmented toggle: Direct (Zap icon, "Live, peer-to-peer") vs Store 5 min (Clock icon, "If they're offline"). Selected card gets a 2px coral border + primary-tinted bg + filled icon. Honest micro-copy under it.
+- Deleted src/components/beam/file-dropzone.tsx (superseded).
+
+WIRING:
+- beam-app.tsx: renders <DragOverlay onFiles={beginSending}/> ONLY when phase is idle/waiting (so it doesn't interfere with receiver flow). Hero headline now uses animate-beam-pop entrance + animated gradient "scan." word. Pill badge with breathing dot above headline.
+- sender-panel.tsx: idle state uses <FileComposer/>; all stage transitions (waiting/transferring/done/reconnecting) now keyed + animate-beam-pop so they bounce in on state change; done checkmark uses animate-beam-bounce.
+
+E2E VERIFICATION (agent-browser):
+- Idle: VLM confirms warm coral bg + white floating card + "Pick your files" + Files/Text toggle + big coral "Choose files" button + prominent "Direct / Store 5 min" segmented toggle. "Design is modern, sleek, clean, fun, human."
+- Drag overlay: before drag → no overlay (correct). Simulated dragenter with Files → overlay appears ("Drop them anywhere" + animated icon + dashed ring). Simulated dragleave → overlay gone (correct). Confirmed it ONLY shows during active drag.
+- Store toggle visibility: clicked "Store 5 min" → VLM confirms it's "visually highlighted as the selected option" with coral border + filled icon; "no longer a buried checkbox… large, obvious card-style selector." Path B upload then worked: "Stored — waiting for them to grab it" + "Disappears in 4:56" + "Path B · encrypted server storage".
+- Path A transfer: still works end-to-end (All yours, 100%, Direct badge, zero console errors).
+- Dark mode: deep warm brown, coral reads through, card visible. Mobile 375px: no overflow, card fits, toggle stacks cleanly.
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- All 4 user complaints fixed: prettier overall, Store toggle is now a big visible segmented control, dropzone only appears during active drag (window-level overlay), way more animations.
+- New files: src/components/beam/{drag-overlay,file-composer}.tsx.
+- Modified: src/app/globals.css (10 new keyframes), src/components/beam/{sender-panel,beam-app}.tsx.
+- Removed: src/components/beam/file-dropzone.tsx (superseded by file-composer).

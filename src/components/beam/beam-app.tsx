@@ -9,6 +9,7 @@ import { HowItWorks, Privacy } from "@/components/beam/sections";
 import { SenderPanel } from "@/components/beam/sender-panel";
 import { ReceiverPanel } from "@/components/beam/receiver-panel";
 import { BackgroundDecor } from "@/components/beam/background-decor";
+import { DragOverlay } from "@/components/beam/drag-overlay";
 
 export function BeamApp() {
   const params = useSearchParams();
@@ -96,24 +97,31 @@ export function BeamApp() {
   return (
     <div className="relative flex min-h-screen flex-col">
       <BackgroundDecor />
+      {/* Window-level drag overlay — ONLY appears while actively dragging files in.
+          Inactive otherwise (the idle card stays clean). */}
+      {(state.phase === "idle" || state.phase === "waiting") && (
+        <DragOverlay onFiles={beginSending} />
+      )}
       <Nav />
       <main className="relative z-10 flex-1">
         {/* Hero */}
         <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-10 text-center sm:px-8 sm:pb-20 sm:pt-14">
-          <div className="animate-beam-fade">
-            <p className="mb-4 text-sm font-medium text-white/70">
+          <div className="animate-beam-pop">
+            <p className="mb-4 inline-flex items-center gap-2 rounded-full border border-white/20 bg-white/10 px-3 py-1 text-xs font-semibold text-white/80 backdrop-blur-sm">
+              <span className="h-1.5 w-1.5 animate-beam-breathe rounded-full bg-white" />
               Files that go straight from you to them
             </p>
-            <h1 className="text-balance text-[38px] font-bold leading-[1.04] tracking-tight text-white sm:text-[52px] lg:text-[64px]">
-              Just drop your files and scan.
+            <h1 className="text-balance text-[40px] font-extrabold leading-[1.02] tracking-tight text-white sm:text-[56px] lg:text-[68px]">
+              Just drop your files<br className="hidden sm:block" /> and{" "}
+              <span className="text-beam-animate">scan.</span>
             </h1>
-            <p className="mx-auto mt-4 max-w-[46ch] text-[17px] leading-relaxed text-white/80 sm:text-[19px]">
-              They go directly to the other device — peer-to-peer, encrypted, gone the moment they land. No app, no account, no servers in the middle.
+            <p className="mx-auto mt-4 max-w-[46ch] text-[16px] leading-relaxed text-white/80 sm:text-[18px]">
+              They go straight to the other device — peer-to-peer, encrypted, gone the moment they land. No app, no account, no servers in the middle.
             </p>
           </div>
 
           <div className="mt-9 flex justify-center sm:mt-12">
-            <div className="animate-beam-fade w-full max-w-[460px]">
+            <div className="animate-beam-pop w-full max-w-[460px]" style={{ animationDelay: "0.1s" }}>
               <SenderPanel
                 state={state}
                 onFiles={beginSending}
