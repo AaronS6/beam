@@ -139,6 +139,13 @@ export function FileDropzone({
               or paste text anywhere to send it as a snippet
             </p>
           )}
+          <div className="mt-4 flex items-center justify-center gap-2 text-[11px] text-muted-foreground/50">
+            <kbd className="rounded border border-border bg-secondary/60 px-1.5 py-0.5 font-sans text-[10px] font-medium">F</kbd>
+            <span>browse files</span>
+            <span className="text-muted-foreground/30">·</span>
+            <kbd className="rounded border border-border bg-secondary/60 px-1.5 py-0.5 font-sans text-[10px] font-medium">Esc</kbd>
+            <span>cancel</span>
+          </div>
           <input
             ref={inputRef}
             type="file"

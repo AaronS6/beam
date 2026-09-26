@@ -11,6 +11,7 @@ import {
   Copy,
   ChevronDown,
   FileText,
+  Share2,
 } from "lucide-react";
 import { formatBytes } from "@/lib/format";
 import type { FileItem } from "@/hooks/use-beam-session";
@@ -32,6 +33,7 @@ export function FileRow({
   onSave,
   onRemove,
   onCopyText,
+  onShareImage,
   draggable,
   onDragStart,
   onDragOver,
@@ -41,6 +43,7 @@ export function FileRow({
   onSave?: (url: string, name: string) => void;
   onRemove?: (id: string) => void;
   onCopyText?: (text: string) => void;
+  onShareImage?: (url: string, name: string, mime: string) => void;
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
   onDragOver?: (e: React.DragEvent) => void;
@@ -50,8 +53,11 @@ export function FileRow({
   const done = file.status === "done";
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
+  const [shared, setShared] = React.useState(false);
   const hasText = done && !!file.text;
-  const hasImage = done && !!file.imageUrl;
+  // Show the thumbnail whenever we have an image URL — on the sender's waiting
+  // queue (queued) AND on the receiver once the file is complete (done).
+  const hasImage = !!file.imageUrl;
 
   const handleCopy = () => {
     if (!file.text || !onCopyText) return;
@@ -157,6 +163,25 @@ export function FileRow({
               {copied ? "Copied" : "Copy"}
             </button>
           )}
+          {hasImage && onShareImage && (
+            <button
+              type="button"
+              onClick={() => {
+                onShareImage(file.imageUrl!, file.name, file.mime || "image/png");
+                setShared(true);
+                setTimeout(() => setShared(false), 1800);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
+              aria-label={`Share ${file.name}`}
+            >
+              {shared ? (
+                <Check className="h-3.5 w-3.5 text-foreground/70" strokeWidth={2} />
+              ) : (
+                <Share2 className="h-3.5 w-3.5" strokeWidth={2} />
+              )}
+              {shared ? "Sent" : "Share"}
+            </button>
+          )}
           {done && onSave && file.url && (
             <button
               type="button"
@@ -205,8 +230,8 @@ export function FileRow({
         </div>
       )}
 
-      {/* Image preview (receiver, expandable) */}
-      {hasImage && (
+      {/* Image preview (expandable — receiver once done; sender anytime) */}
+      {hasImage && done && (
         <div className="mt-3 border-t border-border/70 pt-3">
           <button
             type="button"

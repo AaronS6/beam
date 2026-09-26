@@ -18,6 +18,7 @@ export function BeamApp() {
     reset,
     cancel,
     saveFile,
+    shareImage,
     copyLink,
     removeFile,
     addMoreFiles,
@@ -33,6 +34,26 @@ export function BeamApp() {
     });
   }, [state.files, saveFile]);
 
+  // ---- Global keyboard shortcuts ----
+  // F or B  → open the file browser (idle), Esc → cancel/reset (waiting/transfer/done/error)
+  React.useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (document.activeElement?.tagName ?? "").toLowerCase();
+      const typing = tag === "input" || tag === "textarea";
+      if (typing) return;
+      if ((e.key === "f" || e.key === "b") && state.phase === "idle") {
+        e.preventDefault();
+        const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+        input?.click();
+      } else if (e.key === "Escape" && state.phase !== "idle") {
+        e.preventDefault();
+        reset();
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [state.phase, reset]);
+
   if (isReceiver) {
     return (
       <div className="flex min-h-screen flex-col bg-background">
@@ -43,6 +64,7 @@ export function BeamApp() {
               state={state}
               onSave={saveFile}
               onSaveAll={handleSaveAll}
+              onShareImage={shareImage}
               onReset={() => {
                 // Receiver "start over" → drop the ?r= param and become a sender.
                 if (typeof window !== "undefined") {

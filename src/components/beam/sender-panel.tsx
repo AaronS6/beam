@@ -22,6 +22,7 @@ import { FileRow } from "./file-row";
 import { ProgressRing } from "./progress-ring";
 import { SessionCountdown } from "./session-countdown";
 import { QualityBars } from "./quality-bars";
+import { TransferSummary } from "./transfer-summary";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
@@ -154,7 +155,7 @@ export function SenderPanel({
 
         {phase === "done" && (
           <BeamStage>
-            <div className="flex flex-col items-center px-6 py-12">
+            <div className="flex flex-col items-center px-6 py-10">
               <div className="flex h-20 w-20 items-center justify-center rounded-full bg-beam">
                 <svg width="40" height="40" viewBox="0 0 48 48" fill="none">
                   <path
@@ -171,6 +172,9 @@ export function SenderPanel({
               <p className="mt-1 text-sm text-muted-foreground">
                 {files.length} {files.length === 1 ? "file" : "files"} · {formatBytes(totalBytes)}
               </p>
+              <div className="mt-5 w-full">
+                <TransferSummary state={state} />
+              </div>
             </div>
           </BeamStage>
         )}

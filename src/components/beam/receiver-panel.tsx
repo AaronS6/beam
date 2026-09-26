@@ -14,6 +14,8 @@ import {
 import { BeamStage } from "./beam-stage";
 import { FileRow } from "./file-row";
 import { ProgressRing } from "./progress-ring";
+import { QualityBars } from "./quality-bars";
+import { TransferSummary } from "./transfer-summary";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
@@ -21,14 +23,16 @@ export function ReceiverPanel({
   state,
   onSave,
   onSaveAll,
+  onShareImage,
   onReset,
 }: {
   state: SessionState;
   onSave: (url: string, name: string) => void;
   onSaveAll: () => void;
+  onShareImage: (url: string, name: string, mime: string) => void;
   onReset: () => void;
 }) {
-  const { phase, files, totalBytes, receivedBytes, speed, peerDevice } = state;
+  const { phase, files, totalBytes, receivedBytes, speed, peerDevice, quality } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
   const completedCount = files.filter((f) => f.status === "done").length;
@@ -94,7 +98,7 @@ export function ReceiverPanel({
         <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-beam text-white">
           <Smartphone className="h-6 w-6" strokeWidth={1.75} />
         </div>
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="text-[17px] font-semibold text-foreground">
             {phase === "done" ? "Transfer complete" : "Receiving files"}
           </p>
@@ -103,7 +107,8 @@ export function ReceiverPanel({
           </p>
         </div>
         {phase === "transferring" && (
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-3">
+            <QualityBars level={quality} />
             <ProgressRing value={overall} size={56} stroke={5}>
               <span className="text-[11px] font-semibold tabular-nums text-foreground">{overall}</span>
             </ProgressRing>
@@ -115,6 +120,13 @@ export function ReceiverPanel({
           </div>
         )}
       </div>
+
+      {/* Transfer summary on completion */}
+      {phase === "done" && totalBytes > 0 && (
+        <div className="mb-5 rounded-2xl border border-border bg-card/60 p-4">
+          <TransferSummary state={state} />
+        </div>
+      )}
 
       {/* Reconnecting banner */}
       {phase === "reconnecting" && (
@@ -158,6 +170,7 @@ export function ReceiverPanel({
               file={f}
               onSave={onSave}
               onCopyText={copyText}
+              onShareImage={onShareImage}
             />
           ))}
         </div>

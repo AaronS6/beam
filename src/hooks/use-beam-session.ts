@@ -47,6 +47,9 @@ export type SessionState = {
   error: string | null;
   createdAt: number | null; // epoch ms — session start, for the expiry countdown
   quality: number; // 0..4 connection-quality signal-strength level
+  transferStartedAt: number | null; // epoch ms when the DataChannel opened
+  transferEndedAt: number | null; // epoch ms when the transfer completed
+  peakSpeed: number; // bytes/sec peak observed during the transfer
 };
 
 const INITIAL: SessionState = {
@@ -62,6 +65,9 @@ const INITIAL: SessionState = {
   error: null,
   createdAt: null,
   quality: 0,
+  transferStartedAt: null,
+  transferEndedAt: null,
+  peakSpeed: 0,
 };
 
 export function useBeamSession(sessionIdParam?: string | null) {
@@ -111,7 +117,8 @@ export function useBeamSession(sessionIdParam?: string | null) {
         sr.ema = sr.ema === 0 ? inst : sr.ema * 0.7 + inst * 0.3;
         sr.lastTs = now;
         sr.lastBytes = s.receivedBytes;
-        return { ...s, speed: sr.ema };
+        const peakSpeed = Math.max(s.peakSpeed, sr.ema);
+        return { ...s, speed: sr.ema, peakSpeed };
       });
     }, 400);
     return () => clearInterval(t);
@@ -174,6 +181,9 @@ export function useBeamSession(sessionIdParam?: string | null) {
         mime: f.type || undefined,
         received: 0,
         status: "queued",
+        // Sender-side image preview: create an object URL for image files so the
+        // waiting queue shows a thumbnail before the transfer starts.
+        imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
       }));
       const total = items.reduce((a, b) => a + b.size, 0);
 
@@ -317,6 +327,21 @@ export function useBeamSession(sessionIdParam?: string | null) {
     transferRef.current = null;
     signalingRef.current?.disconnect();
     signalingRef.current = null;
+    // Revoke any sender-side image preview object URLs to avoid leaks.
+    if (typeof window !== "undefined") {
+      setState((s) => {
+        s.files.forEach((f) => {
+          if (f.imageUrl) {
+            try {
+              URL.revokeObjectURL(f.imageUrl);
+            } catch {
+              /* ignore */
+            }
+          }
+        });
+        return s;
+      });
+    }
     rawFilesRef.current = [];
     sessionIdRef.current = mode === "receiver" ? sessionIdParam ?? null : null;
     speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
@@ -342,6 +367,36 @@ export function useBeamSession(sessionIdParam?: string | null) {
     a.remove();
   }, []);
 
+  /** Share a received image via the native OS share sheet (Web Share API).
+   *  Falls back to a normal download if the API or sharing isn't available. */
+  const shareImage = useCallback(
+    async (url: string, name: string, mime: string): Promise<"shared" | "downloaded" | "failed"> => {
+      if (typeof navigator === "undefined" || !navigator.canShare) return "failed";
+      try {
+        const res = await fetch(url);
+        const blob = await res.blob();
+        const file = new File([blob], name, { type: mime || blob.type || "image/png" });
+        if (!navigator.canShare({ files: [file] })) return "failed";
+        await navigator.share({ files: [file], title: name });
+        return "shared";
+      } catch {
+        // User cancelled or share failed — fall back to a download.
+        try {
+          const a = document.createElement("a");
+          a.href = url;
+          a.download = name;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          return "downloaded";
+        } catch {
+          return "failed";
+        }
+      }
+    },
+    [],
+  );
+
   const copyLink = useCallback(async (): Promise<boolean> => {
     if (!state.qrUrl) return false;
     try {
@@ -359,6 +414,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       reset,
       cancel,
       saveFile,
+      shareImage,
       copyLink,
       removeFile,
       addMoreFiles,
@@ -371,6 +427,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       reset,
       cancel,
       saveFile,
+      shareImage,
       copyLink,
       removeFile,
       addMoreFiles,
@@ -406,7 +463,13 @@ function makeTransfer(
 
   t.onChannelOpen = () => {
     speedRefResetLocal();
-    patch({ phase: "transferring", error: null });
+    patch({
+      phase: "transferring",
+      error: null,
+      transferStartedAt: Date.now(),
+      transferEndedAt: null,
+      peakSpeed: 0,
+    });
   };
   t.onChannelClose = () => {
     setState((s) => (s.phase === "done" ? s : { ...s, phase: "error", error: "Connection closed." }));
@@ -519,7 +582,14 @@ function makeTransfer(
     }
   };
   t.onAllComplete = () => {
-    patch({ phase: "done", speed: 0 });
+    setState((s) => ({
+      ...s,
+      phase: "done",
+      speed: 0,
+      transferEndedAt: Date.now(),
+      receivedBytes: s.totalBytes,
+      files: s.files.map((f) => ({ ...f, status: "done" as const, received: f.size })),
+    }));
   };
   t.onCancel = () => patch({ phase: "error", error: "Transfer cancelled by the other device." });
 

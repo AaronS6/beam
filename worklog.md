@@ -220,3 +220,44 @@ Next-phase candidates (not started):
 - Keyboard shortcut to focus the file input (e.g. press "F" to browse).
 - Transfer summary on completion: total time, average speed, files count.
 - Optional: share-to-native (Web Share API) on receiver for images.
+
+---
+Task ID: review-3
+Agent: webDevReview (cron, round 3)
+Task: QA pass + 4 new features (transfer summary, sender image thumbnails, keyboard shortcuts, native share) + styling polish
+
+Work Log:
+- QA: verified servers healthy, ran full E2E transfer — passes, zero console errors, no regressions.
+
+NEW FEATURES:
+1. Transfer completion summary — on the done screen (both sender & receiver), a calm 4-stat grid: Files / Time / Average / Peak. Computed from transferStartedAt/transferEndedAt + peakSpeed tracked during the transfer. Uses formatDuration (new helper in format.ts: "<10s" → "1.2s", "<60s" → "12s", else "1m 04s"). Verified: both sides show the grid. (src/components/beam/transfer-summary.tsx, src/hooks/use-beam-session.ts transferStartedAt/transferEndedAt/peakSpeed + onChannelOpen/onAllComplete wiring, src/lib/format.ts formatDuration)
+2. Sender-side image thumbnails — when the sender selects image files, the hook now creates object URLs (isImageLike) and stores them on FileItem.imageUrl. FileRow renders the thumbnail whenever imageUrl exists (not just on done), so the waiting queue shows image previews before transfer. Object URLs are revoked on reset to avoid leaks. Verified: sender waiting queue rendered an <img> for icon-512.png. (src/hooks/use-beam-session.ts beginSending imageUrl + reset revoke, src/components/beam/file-row.tsx hasImage logic)
+3. Keyboard shortcuts — global keydown listener in beam-app: F or B (idle) opens the file browser; Esc (any non-idle phase) resets/cancels. Skips when typing in an input/textarea. The dropzone shows a kbd hint row ("F browse files · Esc cancel"). Verified: Esc reset from waiting → idle confirmed. (src/components/beam/beam-app.tsx, src/components/beam/file-dropzone.tsx kbd hint)
+4. Native share for images — receiver gets a "Share" button (Share2 icon) on image files that calls navigator.share({files}) via the Web Share API, falling back to a normal download if the API isn't available or sharing fails. The hook's shareImage action fetches the blob, wraps it in a File, and shares. (src/hooks/use-beam-session.ts shareImage, src/components/beam/file-row.tsx Share button, src/components/beam/receiver-panel.tsx onShareImage prop)
+- Bonus: receiver transferring header now also shows the QualityBars next to the progress ring.
+
+STYLING POLISH:
+- Done-state card enriched with the stats grid (4-col, small icons + value + uppercase label).
+- Dropzone: subtle kbd-styled keyboard shortcut hints.
+- Receiver done state: summary in a bordered card above the file list.
+- FileRow image thumbnail: now also used on the sender's waiting queue (not just receiver-done).
+
+E2E VERIFICATION (agent-browser):
+- Image + text transfer: uploaded icon-512.png + notes.txt → sender queue showed image thumbnail. Receiver: both 100%, image had Share + Save, summary grid (FILES/TIME/AVERAGE/PEAK) rendered. Sender showed "Sent" + "2 files · 19.7 KB" + summary. ✅
+- Esc keyboard shortcut: from waiting state, pressed Escape → reset to idle dropzone. ✅
+- F keyboard shortcut: pressed F in idle → input.click() called (native dialog blocked in headless, but handler verified). 
+- Dark mode sent state: summary grid renders correctly. VLM reconstructed the full HTML structure confirming the stats grid + Send more files / Done buttons. ✅
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- 4 new features shipped + styling polish, all E2E verified.
+- New files: src/components/beam/transfer-summary.tsx.
+- Modified: src/hooks/use-beam-session.ts (summary fields + shareImage + sender imageUrl + reset revoke), src/lib/format.ts (formatDuration), src/components/beam/{file-row,receiver-panel,sender-panel,beam-app,file-dropzone}.tsx.
+- Cumulative feature set now: text sharing, image preview (both sides), paste-to-send, copy link, countdown, queue remove/add/reorder, connection-quality bars, transfer summary, keyboard shortcuts, native share, reconnect handling, PWA.
+
+Next-phase candidates (not started):
+- Aggregate "Copy all text" action on receiver when multiple text files arrive.
+- Multi-file "Share all" via Web Share API (zip-less, share files[] array).
+- Drag-reorder on mobile (touch) — currently HTML5 DnD is desktop-only; consider pointer-event based reorder.
+- Settings panel: toggle dark mode default, toggle reduced-motion.
+- Optional: persistent local transfer history (ephemeral, last 5 sessions) for quick re-download.

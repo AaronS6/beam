@@ -37,6 +37,17 @@ export function formatEta(seconds: number): string {
   return `${m}:${r.toString().padStart(2, "0")}`;
 }
 
+/** Duration from ms — "1.2s", "12s", "1m 04s". */
+export function formatDuration(ms: number): string {
+  if (!isFinite(ms) || ms <= 0) return "—";
+  const s = ms / 1000;
+  if (s < 10) return `${s.toFixed(1)}s`;
+  if (s < 60) return `${Math.round(s)}s`;
+  const m = Math.floor(s / 60);
+  const r = Math.round(s % 60);
+  return `${m}m ${r.toString().padStart(2, "0")}s`;
+}
+
 export type DeviceDescriptor = {
   label: string; // "iPhone", "MacBook", "Android Phone"
   short: string; // "iOS", "macOS", "Android", "Windows"
