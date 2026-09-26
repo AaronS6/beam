@@ -1,17 +1,19 @@
 "use client";
 
 /**
- * useBeamSession — orchestrates the signaling + WebRTC lifecycle and exposes
- * a single state object the UI renders from.
+ * useBeamSession — orchestrates the signaling + WebRTC lifecycle (Path A) AND
+ * the temporary-storage fallback (Path B), exposing a single state object.
  *
- * Modes:
- *  - sender:   no `?r=` query. Generates a session, shows a QR, waits for a peer,
- *              then streams the selected files.
- *  - receiver: `?r={sessionId}` query. Joins the session, receives files, offers saves.
+ * Path A (default): true peer-to-peer over parallel WebRTC DataChannels.
+ *   Nothing is stored anywhere. QR/session expires after 5 min if no peer connects.
+ * Path B (opt-in "Store temporarily"): files upload once to encrypted server
+ *   storage; auto-delete within 5 min OR the instant the receiver finishes
+ *   downloading — one-time-use. The backend enforces both ceilings; the client
+ *   countdown is just a courtesy.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SignalingClient, type DeviceInfo } from "@/lib/signaling";
+import { SignalingClient } from "@/lib/signaling";
 import {
   BeamTransfer,
   getIceServers,
@@ -28,11 +30,14 @@ export type FileItem = {
   received: number;
   status: "queued" | "transferring" | "done" | "error";
   url?: string;
-  text?: string; // populated for small text-like files so the receiver can preview/copy
-  imageUrl?: string; // object URL for image files → receiver shows a thumbnail
+  text?: string;
+  imageUrl?: string;
 };
 
 export type Phase = TransferState | "expired";
+
+/** 5-minute ceiling for both paths (Path A session idle, Path B storage). */
+const SESSION_TTL_MS = 5 * 60 * 1000;
 
 export type SessionState = {
   mode: "sender" | "receiver";
@@ -43,13 +48,17 @@ export type SessionState = {
   files: FileItem[];
   totalBytes: number;
   receivedBytes: number;
-  speed: number; // bytes/sec
+  speed: number;
   error: string | null;
-  createdAt: number | null; // epoch ms — session start, for the expiry countdown
-  quality: number; // 0..4 connection-quality signal-strength level
-  transferStartedAt: number | null; // epoch ms when the DataChannel opened
-  transferEndedAt: number | null; // epoch ms when the transfer completed
-  peakSpeed: number; // bytes/sec peak observed during the transfer
+  createdAt: number | null;
+  quality: number;
+  transferStartedAt: number | null;
+  transferEndedAt: number | null;
+  peakSpeed: number;
+  candidateType: "host" | "srflx" | "prflx" | "relay" | "unknown" | null;
+  storeMode: boolean; // Path B toggle
+  /** Path B: epoch ms when stored files expire (createdAt + 5 min). Null on Path A. */
+  storeExpiresAt: number | null;
 };
 
 const INITIAL: SessionState = {
@@ -68,6 +77,9 @@ const INITIAL: SessionState = {
   transferStartedAt: null,
   transferEndedAt: null,
   peakSpeed: 0,
+  candidateType: null,
+  storeMode: false,
+  storeExpiresAt: null,
 };
 
 export function useBeamSession(sessionIdParam?: string | null) {
@@ -82,8 +94,9 @@ export function useBeamSession(sessionIdParam?: string | null) {
 
   const signalingRef = useRef<SignalingClient | null>(null);
   const transferRef = useRef<BeamTransfer | null>(null);
-  const rawFilesRef = useRef<File[]>([]); // sender's raw File objects
+  const rawFilesRef = useRef<File[]>([]);
   const sessionIdRef = useRef<string | null>(mode === "receiver" ? sessionIdParam ?? null : null);
+  const storeModeRef = useRef<boolean>(false);
   const speedRef = useRef({ lastTs: 0, lastBytes: 0, ema: 0 });
   const reconnectPrevPhase = useRef<Phase | null>(null);
 
@@ -91,12 +104,16 @@ export function useBeamSession(sessionIdParam?: string | null) {
     setState((s) => ({ ...s, ...p }));
   }, []);
 
-  // Keep sessionIdRef in sync so the peer-joined handler always uses the latest.
   useEffect(() => {
     sessionIdRef.current = state.sessionId;
-  }, [state.sessionId]);
+    storeModeRef.current = state.storeMode;
+  }, [state.sessionId, state.storeMode]);
 
-  // ---- Speed sampler (runs while transferring) ----
+  const setStoreMode = useCallback((v: boolean) => {
+    patch({ storeMode: v });
+  }, [patch]);
+
+  // ---- Speed sampler (tracks peak too) ----
   useEffect(() => {
     const t = setInterval(() => {
       setState((s) => {
@@ -105,11 +122,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         }
         const now = performance.now();
         const sr = speedRef.current;
-        if (sr.lastTs === 0) {
-          sr.lastTs = now;
-          sr.lastBytes = s.receivedBytes;
-          return s;
-        }
+        if (sr.lastTs === 0) { sr.lastTs = now; sr.lastBytes = s.receivedBytes; return s; }
         const dt = (now - sr.lastTs) / 1000;
         if (dt < 0.4) return s;
         const dB = s.receivedBytes - sr.lastBytes;
@@ -124,45 +137,108 @@ export function useBeamSession(sessionIdParam?: string | null) {
     return () => clearInterval(t);
   }, []);
 
-  // ---- Receiver: auto-join the session on mount ----
+  // ---- Path A: 5-min session-expiry countdown (no peer → expire) ----
+  useEffect(() => {
+    if (mode !== "sender") return;
+    if (state.phase !== "waiting") return;
+    if (!state.createdAt) return;
+    const expiry = state.createdAt + SESSION_TTL_MS;
+    const t = setInterval(() => {
+      if (Date.now() >= expiry) {
+        // Expire the session locally + tell signaling to leave.
+        signalingRef.current?.leaveSession(state.sessionId ?? "");
+        patch({ phase: "expired" });
+      }
+    }, 1000);
+    return () => clearInterval(t);
+  }, [mode, state.phase, state.createdAt, state.sessionId, patch]);
+
+  // ---- Receiver: auto-join (Path A) OR fetch stored files (Path B) on mount ----
   useEffect(() => {
     if (mode !== "receiver" || !sessionIdParam) return;
 
-    const signaling = new SignalingClient();
-    signalingRef.current = signaling;
+    let cancelled = false;
 
-    signaling.onConnect = () => {
-      signaling.joinSession(sessionIdParam, deviceInfo());
-    };
-    signaling.onSessionJoined = ({ sender }) => {
-      patch({
-        phase: "waiting",
-        peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
+    // First, probe Path B: does this session have stored files?
+    fetch(`/api/beam/store/list?sessionId=${encodeURIComponent(sessionIdParam)}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then(async (data) => {
+        if (cancelled) return;
+        if (data && data.ok && Array.isArray(data.files) && data.files.length > 0) {
+          // ---- PATH B (receiver) ----
+          patch({
+            phase: "connected",
+            peerDevice: { label: "Stored transfer", short: "stored" },
+            storeMode: true,
+            files: data.files.map((f: any) => ({
+              id: f.id,
+              name: f.name,
+              size: f.size,
+              mime: f.mime,
+              received: 0,
+              status: "queued" as const,
+            })),
+            totalBytes: data.files.reduce((a: number, b: any) => a + (b.size as number), 0),
+            storeExpiresAt: new Date(data.expiresAt).getTime(),
+          });
+        } else {
+          // ---- PATH A (receiver) — join the signaling session ----
+          const signaling = new SignalingClient();
+          signalingRef.current = signaling;
+          signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
+          signaling.onSessionJoined = ({ sender }) => {
+            patch({
+              phase: "waiting",
+              peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
+            });
+          };
+          signaling.onError = (msg) => {
+            if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
+            else patch({ error: msg });
+          };
+          signaling.onSessionExpired = () => patch({ phase: "expired" });
+          signaling.onPeerLeft = () => {
+            setState((s) =>
+              s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
+            );
+          };
+          signaling.onSignal = (sigdata) => {
+            let transfer = transferRef.current;
+            if (!transfer) {
+              transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
+              transferRef.current = transfer;
+            }
+            void transfer.handleSignal(sigdata);
+          };
+        }
+      })
+      .catch(() => {
+        // Network error probing — fall back to Path A.
+        if (cancelled) return;
+        const signaling = new SignalingClient();
+        signalingRef.current = signaling;
+        signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
+        signaling.onSessionJoined = ({ sender }) =>
+          patch({ phase: "waiting", peerDevice: sender?.name ? labelToDescriptor(sender.name) : null });
+        signaling.onError = (msg) => {
+          if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
+        };
+        signaling.onSessionExpired = () => patch({ phase: "expired" });
+        signaling.onSignal = (sigdata) => {
+          let transfer = transferRef.current;
+          if (!transfer) {
+            transfer = makeTransfer("receiver", sessionIdParam, signaling!, patch, setState, reconnectPrevPhase);
+            transferRef.current = transfer;
+          }
+          void transfer.handleSignal(sigdata);
+        };
       });
-    };
-    signaling.onError = (msg) => {
-      if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
-      else patch({ error: msg });
-    };
-    signaling.onSessionExpired = () => patch({ phase: "expired" });
-    signaling.onPeerLeft = () => {
-      setState((s) =>
-        s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
-      );
-    };
-    signaling.onSignal = (data) => {
-      let transfer = transferRef.current;
-      if (!transfer) {
-        transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
-        transferRef.current = transfer;
-      }
-      void transfer.handleSignal(data);
-    };
 
     return () => {
+      cancelled = true;
       transferRef.current?.releaseAll();
       transferRef.current?.close();
-      signaling.disconnect();
+      signalingRef.current?.disconnect();
       transferRef.current = null;
       signalingRef.current = null;
     };
@@ -181,8 +257,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
         mime: f.type || undefined,
         received: 0,
         status: "queued",
-        // Sender-side image preview: create an object URL for image files so the
-        // waiting queue shows a thumbnail before the transfer starts.
         imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
       }));
       const total = items.reduce((a, b) => a + b.size, 0);
@@ -191,6 +265,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       sessionIdRef.current = sessionId;
       const origin = typeof window !== "undefined" ? window.location.origin : "https://beam.app";
       const qrUrl = `${origin}/?r=${sessionId}`;
+      const now = Date.now();
 
       patch({
         sessionId,
@@ -200,26 +275,34 @@ export function useBeamSession(sessionIdParam?: string | null) {
         receivedBytes: 0,
         phase: "waiting",
         error: null,
-        createdAt: Date.now(),
+        createdAt: now,
+        storeExpiresAt: storeModeRef.current ? now + SESSION_TTL_MS : null,
       });
 
-      // Tear down any prior transfer before starting fresh.
       transferRef.current?.close();
       transferRef.current = null;
 
+      // ---- PATH B: upload to server storage instead of WebRTC ----
+      if (storeModeRef.current) {
+        void uploadPathB(sessionId, files, items, patch, setState).then((ok) => {
+          if (!ok) {
+            patch({ phase: "error", error: "Upload failed. Try peer-to-peer mode instead." });
+          } else {
+            // Stay in "waiting" — the QR now points to the stored files.
+            // No signaling/WebRTC needed; the receiver fetches on scan.
+          }
+        });
+        return;
+      }
+
+      // ---- PATH A: peer-to-peer via signaling + WebRTC ----
       const signaling = new SignalingClient();
       signalingRef.current = signaling;
       speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
 
-      signaling.onConnect = () => {
-        signaling.createSession(sessionId, deviceInfo());
-      };
-      signaling.onSessionCreated = ({ createdAt }) => {
-        // Server confirmed the session — record the start time for the countdown.
-        patch({ createdAt });
-      };
+      signaling.onConnect = () => signaling.createSession(sessionId, deviceInfo());
+      signaling.onSessionCreated = ({ createdAt }) => patch({ createdAt });
       signaling.onPeerJoined = ({ receiver }) => {
-        // A receiver scanned the QR. Build the transfer + create the offer.
         const sid = sessionIdRef.current ?? sessionId;
         patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
         const transfer = makeTransfer("sender", sid, signaling, patch, setState, reconnectPrevPhase);
@@ -227,9 +310,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         transferRef.current = transfer;
         void transfer.createOffer();
       };
-      signaling.onSignal = (data) => {
-        transferRef.current?.handleSignal(data);
-      };
+      signaling.onSignal = (data) => transferRef.current?.handleSignal(data);
       signaling.onPeerLeft = () => {
         setState((s) =>
           s.phase === "done"
@@ -244,35 +325,84 @@ export function useBeamSession(sessionIdParam?: string | null) {
     [patch],
   );
 
-  // ---- Sender queue management (only valid while waiting, before a peer connects) ----
-  const removeFile = useCallback(
-    (id: string) => {
-      setState((s) => {
-        if (s.phase !== "waiting" && s.phase !== "connected") return s;
-        const idx = s.files.findIndex((f) => f.id === id);
-        if (idx === -1) return s;
-        const files = s.files.filter((f) => f.id !== id);
-        // Sync the raw File objects (same order) so the transfer sends the right set.
-        rawFilesRef.current = rawFilesRef.current.filter((_, i) => i !== idx);
-        const totalBytes = files.reduce((a, b) => a + b.size, 0);
-        if (files.length === 0) {
-          // Nothing left to send — tear down the waiting session.
-          transferRef.current?.close();
-          transferRef.current = null;
-          signalingRef.current?.disconnect();
-          signalingRef.current = null;
-          return { ...s, ...INITIAL, mode: s.mode };
-        }
-        return { ...s, files, totalBytes };
-      });
-    },
-    [],
-  );
+  // ---- Path B receiver: download a single stored file (one-time-use) ----
+  const downloadStored = useCallback(async (fileId: string) => {
+    // Mark transferring, fetch the bytes (this consumes the link server-side).
+    setState((s) => ({
+      ...s,
+      files: s.files.map((f) => (f.id === fileId ? { ...f, status: "transferring" } : f)),
+    }));
+    const meta = state.files.find((f) => f.id === fileId);
+    try {
+      const res = await fetch(`/api/beam/store?id=${encodeURIComponent(fileId)}`);
+      if (!res.ok) {
+        const j = await res.json().catch(() => ({ error: "Download failed" }));
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) => (f.id === fileId ? { ...f, status: "error" } : f)),
+          error: j.error ?? "Download failed",
+        }));
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      setState((s) => ({
+        ...s,
+        files: s.files.map((f) =>
+          f.id === fileId
+            ? {
+                ...f,
+                status: "done",
+                received: f.size,
+                url,
+                text: isTextLike(f.name, f.mime) && f.size <= 256 * 1024 ? undefined : f.text,
+                imageUrl: isImageLike(f.name, f.mime) ? url : f.imageUrl,
+              }
+            : f,
+        ),
+      }));
+      // If it's a small text file, read it for preview.
+      if (meta && isTextLike(meta.name, meta.mime) && meta.size > 0 && meta.size <= 256 * 1024) {
+        const text = await blob.text();
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) => (f.id === fileId ? { ...f, text } : f)),
+        }));
+      }
+    } catch (e) {
+      setState((s) => ({
+        ...s,
+        files: s.files.map((f) => (f.id === fileId ? { ...f, status: "error" } : f)),
+        error: String(e),
+      }));
+    }
+  }, [state.files]);
+
+  // ---- Queue management (Path A sender, while waiting) ----
+  const removeFile = useCallback((id: string) => {
+    setState((s) => {
+      if (s.phase !== "waiting" && s.phase !== "connected") return s;
+      const idx = s.files.findIndex((f) => f.id === id);
+      if (idx === -1) return s;
+      const files = s.files.filter((f) => f.id !== id);
+      rawFilesRef.current = rawFilesRef.current.filter((_, i) => i !== idx);
+      const totalBytes = files.reduce((a, b) => a + b.size, 0);
+      if (files.length === 0) {
+        transferRef.current?.close();
+        transferRef.current = null;
+        signalingRef.current?.disconnect();
+        signalingRef.current = null;
+        return { ...s, ...INITIAL, mode: s.mode };
+      }
+      return { ...s, files, totalBytes };
+    });
+  }, []);
 
   const addMoreFiles = useCallback((more: File[]) => {
     if (more.length === 0) return;
     setState((s) => {
       if (s.phase !== "waiting" && s.phase !== "connected") return s;
+      if (s.storeMode) return s; // Path B: no mid-flight queue changes after upload
       const extra: FileItem[] = more.map((f, i) => ({
         id: `${Date.now()}-${s.files.length + i}`,
         name: f.name || `file-${s.files.length + i + 1}`,
@@ -280,6 +410,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         mime: f.type || undefined,
         received: 0,
         status: "queued",
+        imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
       }));
       rawFilesRef.current = [...rawFilesRef.current, ...more];
       const files = [...s.files, ...extra];
@@ -287,7 +418,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
     });
   }, []);
 
-  /** Reorder the waiting queue (drag-reorder). from/to are file ids. */
   const reorderFiles = useCallback((fromId: string, toId: string) => {
     setState((s) => {
       if (s.phase !== "waiting" && s.phase !== "connected") return s;
@@ -297,7 +427,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
       const files = [...s.files];
       const [moved] = files.splice(from, 1);
       files.splice(to, 0, moved);
-      // Sync rawFilesRef to the same permutation.
       const rawFrom = rawFilesRef.current[from];
       const raws = [...rawFilesRef.current];
       raws.splice(from, 1);
@@ -307,8 +436,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
     });
   }, []);
 
-  /** Paste-to-send: turn pasted text into a snippet file. Used by the global
-   *  paste listener on the idle dropzone. */
   const sendPastedText = useCallback(
     (text: string) => {
       const value = text.trim();
@@ -327,16 +454,11 @@ export function useBeamSession(sessionIdParam?: string | null) {
     transferRef.current = null;
     signalingRef.current?.disconnect();
     signalingRef.current = null;
-    // Revoke any sender-side image preview object URLs to avoid leaks.
     if (typeof window !== "undefined") {
       setState((s) => {
         s.files.forEach((f) => {
           if (f.imageUrl) {
-            try {
-              URL.revokeObjectURL(f.imageUrl);
-            } catch {
-              /* ignore */
-            }
+            try { URL.revokeObjectURL(f.imageUrl); } catch { /* ignore */ }
           }
         });
         return s;
@@ -346,11 +468,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
     sessionIdRef.current = mode === "receiver" ? sessionIdParam ?? null : null;
     speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
     reconnectPrevPhase.current = null;
-    patch({
-      ...INITIAL,
-      mode,
-      sessionId: mode === "receiver" ? sessionIdParam ?? null : null,
-    });
+    patch({ ...INITIAL, mode, sessionId: mode === "receiver" ? sessionIdParam ?? null : null });
   }, [mode, patch, sessionIdParam]);
 
   const cancel = useCallback(() => {
@@ -367,8 +485,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
     a.remove();
   }, []);
 
-  /** Share a received image via the native OS share sheet (Web Share API).
-   *  Falls back to a normal download if the API or sharing isn't available. */
   const shareImage = useCallback(
     async (url: string, name: string, mime: string): Promise<"shared" | "downloaded" | "failed"> => {
       if (typeof navigator === "undefined" || !navigator.canShare) return "failed";
@@ -380,7 +496,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
         await navigator.share({ files: [file], title: name });
         return "shared";
       } catch {
-        // User cancelled or share failed — fall back to a download.
         try {
           const a = document.createElement("a");
           a.href = url;
@@ -397,27 +512,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
     [],
   );
 
-  /** Copy the text of all received text files into the clipboard, joined with
-   *  a separator. Returns the number of files copied. */
-  const copyAllText = useCallback(async (): Promise<number> => {
-    const texts = state.files.filter((f) => f.text).map((f) => f.text as string);
-    if (texts.length === 0) return 0;
-    const joined = texts.join("\n\n— — —\n\n");
-    try {
-      await navigator.clipboard.writeText(joined);
-    } catch {
-      return 0;
-    }
-    return texts.length;
-  }, [state.files]);
-
-  /** Share all received files at once via the native share sheet (Web Share API
-   *  with a files[] array). Falls back to downloading each one. */
   const shareAll = useCallback(async (): Promise<"shared" | "downloaded" | "failed"> => {
     const done = state.files.filter((f) => f.url);
     if (done.length === 0) return "failed";
     if (typeof navigator === "undefined" || !navigator.canShare) {
-      // Fall back to downloading all.
       done.forEach((f) => saveFile(f.url!, f.name));
       return "downloaded";
     }
@@ -438,6 +536,18 @@ export function useBeamSession(sessionIdParam?: string | null) {
       return "failed";
     }
   }, [state.files, saveFile]);
+
+  const copyAllText = useCallback(async (): Promise<number> => {
+    const texts = state.files.filter((f) => f.text).map((f) => f.text as string);
+    if (texts.length === 0) return 0;
+    const joined = texts.join("\n\n— — —\n\n");
+    try {
+      await navigator.clipboard.writeText(joined);
+    } catch {
+      return 0;
+    }
+    return texts.length;
+  }, [state.files]);
 
   const copyLink = useCallback(async (): Promise<boolean> => {
     if (!state.qrUrl) return false;
@@ -464,21 +574,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
       addMoreFiles,
       reorderFiles,
       sendPastedText,
+      setStoreMode,
+      downloadStored,
     }),
     [
-      state,
-      beginSending,
-      reset,
-      cancel,
-      saveFile,
-      shareImage,
-      shareAll,
-      copyAllText,
-      copyLink,
-      removeFile,
-      addMoreFiles,
-      reorderFiles,
-      sendPastedText,
+      state, beginSending, reset, cancel, saveFile, shareImage, shareAll, copyAllText,
+      copyLink, removeFile, addMoreFiles, reorderFiles, sendPastedText, setStoreMode, downloadStored,
     ],
   );
 }
@@ -492,10 +593,6 @@ function labelToDescriptor(label: string): DeviceDescriptor {
   return { label, short };
 }
 
-/**
- * Factory that wires a BeamTransfer's callbacks to React state setters.
- * Shared by both sender & receiver paths so progress/reconnect UX is identical.
- */
 function makeTransfer(
   role: "sender" | "receiver",
   sessionId: string,
@@ -508,7 +605,6 @@ function makeTransfer(
   const t = new BeamTransfer(role, sessionId, signaling, ice);
 
   t.onChannelOpen = () => {
-    speedRefResetLocal();
     patch({
       phase: "transferring",
       error: null,
@@ -539,17 +635,13 @@ function makeTransfer(
   };
   t.onFailed = (reason) => patch({ phase: "error", error: reason });
   t.onQuality = (level) => patch({ quality: level });
+  t.onCandidateType = (ct) => patch({ candidateType: ct });
 
   t.onFileMeta = (files: IncomingFile[]) => {
     setState((s) => ({
       ...s,
       files: files.map((f) => ({
-        id: f.id,
-        name: f.name,
-        size: f.size,
-        mime: f.mime,
-        received: 0,
-        status: "queued" as const,
+        id: f.id, name: f.name, size: f.size, mime: f.mime, received: 0, status: "queued" as const,
       })),
       totalBytes: files.reduce((a, b) => a + b.size, 0),
       receivedBytes: 0,
@@ -574,42 +666,29 @@ function makeTransfer(
         receivedBytes += f.received;
         return f;
       });
-      return {
-        ...s,
-        files,
-        receivedBytes,
-        totalBytes: s.totalBytes || files.reduce((a, b) => a + b.size, 0),
-      };
+      return { ...s, files, receivedBytes, totalBytes: s.totalBytes || files.reduce((a, b) => a + b.size, 0) };
     });
   };
   t.onFileComplete = (file: IncomingFile, url: string) => {
-    // For small text-like files, read the content so the receiver can preview +
-    // copy it inline (no forced download needed for a URL or code snippet).
     const isText = isTextLike(file.name, file.mime);
     const isImage = isImageLike(file.name, file.mime);
-
     if (url && isText && file.size > 0 && file.size <= 256 * 1024) {
-      fetch(url)
-        .then((r) => r.text())
-        .then((text) => {
-          setState((s) => ({
-            ...s,
-            files: s.files.map((f) =>
-              f.id === file.id ? { ...f, status: "done" as const, received: f.size, url, text } : f,
-            ),
-          }));
-        })
-        .catch(() => {
-          setState((s) => ({
-            ...s,
-            files: s.files.map((f) =>
-              f.id === file.id ? { ...f, status: "done" as const, received: f.size, url } : f,
-            ),
-          }));
-        });
+      fetch(url).then((r) => r.text()).then((text) => {
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) =>
+            f.id === file.id ? { ...f, status: "done" as const, received: f.size, url, text } : f,
+          ),
+        }));
+      }).catch(() => {
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) =>
+            f.id === file.id ? { ...f, status: "done" as const, received: f.size, url } : f,
+          ),
+        }));
+      });
     } else if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
-      // Images: keep the object URL for an inline thumbnail. (Object URL == blob URL,
-      // safe to use directly as <img src>.) Cap at 16MB to avoid burning memory.
       setState((s) => ({
         ...s,
         files: s.files.map((f) =>
@@ -642,11 +721,50 @@ function makeTransfer(
   return t;
 }
 
-function speedRefResetLocal() {
-  // no-op; the speed sampler resets itself via its own closure.
+// ---- Path B: upload all files to encrypted server storage ----
+async function uploadPathB(
+  sessionId: string,
+  files: File[],
+  items: FileItem[],
+  patch: (p: Partial<SessionState>) => void,
+  setState: React.Dispatch<React.SetStateAction<SessionState>>,
+): Promise<boolean> {
+  let uploaded = 0;
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const meta = items[i];
+    setState((s) => ({
+      ...s,
+      files: s.files.map((f) => (f.id === meta.id ? { ...f, status: "transferring" } : f)),
+    }));
+    try {
+      const fd = new FormData();
+      fd.append("sessionId", sessionId);
+      fd.append("name", file.name);
+      fd.append("mime", file.type || "application/octet-stream");
+      fd.append("file", file, file.name);
+      const res = await fetch("/api/beam/store", { method: "POST", body: fd });
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error ?? "upload failed");
+      uploaded++;
+      setState((s) => ({
+        ...s,
+        files: s.files.map((f) =>
+          f.id === meta.id ? { ...f, status: "done", received: f.size, id: data.fileId ?? f.id } : f,
+        ),
+        receivedBytes: s.receivedBytes + file.size,
+      }));
+    } catch {
+      return false;
+    }
+  }
+  // Mark waiting state — QR now points to stored files.
+  patch({ phase: "waiting", error: null });
+  void uploaded;
+  return true;
 }
 
-/** True for files we should inline-preview as text (snippets, URLs, notes). */
+// ---- helpers ----
 function isTextLike(name: string, mime?: string): boolean {
   if (mime) {
     if (mime.startsWith("text/")) return true;
@@ -657,11 +775,10 @@ function isTextLike(name: string, mime?: string): boolean {
     "txt", "md", "markdown", "json", "js", "ts", "tsx", "jsx", "css", "scss",
     "html", "htm", "xml", "yaml", "yml", "csv", "tsv", "sh", "py", "rb", "go",
     "rs", "java", "c", "cc", "cpp", "h", "hpp", "sql", "toml", "ini", "env",
-    "log", "conf", "gitignore", "env",
+    "log", "conf", "gitignore",
   ].includes(ext);
 }
 
-/** True for image files we can show as an inline thumbnail. */
 function isImageLike(name: string, mime?: string): boolean {
   if (mime && mime.startsWith("image/")) return true;
   const ext = name.split(".").pop()?.toLowerCase() ?? "";

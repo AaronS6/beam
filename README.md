@@ -1,19 +1,38 @@
 # Beam
 
-**Send files without the cables.** Beam is a cross-device file-transfer tool that works by scanning a QR code. Two devices pair through a lightweight signaling server, then transfer files **directly peer-to-peer over WebRTC** — encrypted end to end, with no file bytes ever touching a server. No app install required.
+**Just drop your files and scan.** Beam is a cross-device file-transfer tool with a warm, human design and two transfer paths: **direct peer-to-peer** (default, nothing stored) and **temporary server storage** (opt-in, auto-deletes within 5 minutes or the instant the file is grabbed). No app install required.
 
-Works between Android, iPhone, laptop, and desktop — any combination that has a browser and a camera.
+Works between Android, iPhone, laptop, and desktop — any combination with a browser and a camera.
 
 ---
 
-## How it works
+## What's new in this version (v2 redesign)
 
-1. **Sender** opens the site, picks one or more files. The site generates a short-lived session ID and renders a QR code encoding `https://<your-host>/?r=<sessionId>`.
-2. **Receiver** scans the QR with any phone camera. The URL opens the same page, which joins the session over the signaling server.
-3. The signaling server relays **only** WebRTC connection metadata (SDP offer/answer, ICE candidates) between the two browsers. It never sees file data.
-4. Once the WebRTC `RTCPeerConnection` + `RTCDataChannel` is established, file bytes flow **directly device-to-device**, encrypted with DTLS.
-5. Files are sent in 64 KB chunks with `bufferedAmount` backpressure handling. The receiver reassembles chunks into a Blob and offers a one-tap save.
-6. The session expires automatically after ~10 minutes of inactivity.
+This is a full redesign + stricter file-lifecycle + throughput overhaul of the original Beam. Three things changed:
+
+### 1. Visual redesign — WeTransfer-style warmth, not Apple-minimal
+The old version was a stark white Apple-style page. v2 is a **bold warm coral full-bleed background** (`#FF7A5C`) with a single **white floating card** as the focal point. Big friendly sentence-case headline ("Just drop your files and scan."), generous 28px rounded corners, soft warm shadows, drifting blob decorations behind the card, and micro-copy that sounds like a person ("Drop your files here" / "Scan to grab them" / "This disappears in 4:32"). Dark mode shifts to a **deep warm espresso** (`#2A1812`) so the brand color still reads through — never pure black. One accent (coral), one background, one card.
+
+### 2. Two file-lifecycle paths with hard auto-deletion
+- **Path A — Direct peer-to-peer (default):** files stream over WebRTC DataChannels, never touch any server, nothing to delete. The QR/session expires after **5 minutes** if no second device connects.
+- **Path B — Store temporarily (opt-in toggle):** if the sender enables "Store temporarily" before generating the code, files upload **once** to encrypted-at-rest server storage (AES-256-GCM, per-file random key) instead of streaming P2P. Two hard server-side rules:
+  - **Auto-delete ≤ 5 min after upload** — enforced by a `setInterval` cleanup job in `src/instrumentation.ts` that runs every 30 seconds and physically deletes the encrypted blob + DB row. Not a client timer; cannot be bypassed by closing the tab.
+  - **Instant delete on first full download** — a `GET /api/beam/store?id=...` atomically claims the record (`updateMany` check-and-set on `downloadedAt IS NULL`), then deletes the file + row before returning the bytes. A second GET returns **404 "This link has expired or already been used."** — one-time-use only.
+  - Both screens show an honest live countdown ("Disappears in 4:32" / "Gone once they download it").
+
+### 3. Maximum transfer speed — specific optimizations for Path A
+The old version used a single ordered DataChannel with 64 KB chunks. v2 implements, in `src/lib/webrtc.ts`:
+- **4 parallel RTCDataChannels**: 1 ordered control channel (`ctrl`) + 3 unordered data channels (`d0`,`d1`,`d2` with `ordered:false, maxRetransmits:3`). File chunks are **striped round-robin** across the 3 data channels, each tagged with `{fileId, index}`; the receiver reassembles by index. SCTP delivers them in parallel → roughly 2-3× throughput on fast links.
+- **256 KB chunks** (vs the 16 KB default) — fewer syscall round-trips per byte.
+- **Per-channel backpressure** via `bufferedAmountLowThreshold` (2 MB) + the `bufferedamountlow` event (pause at 8 MB high watermark) — never overflows or stalls.
+- **`ordered:false` + bounded `maxRetransmits`** on data channels — strict ordering isn't needed because chunks reassemble by index; unordered lets SCTP skip head-of-line blocking.
+- **ICE candidate-type logging**: the winning pair is read from `getStats()` and surfaced as a **"Direct" / "Relay" badge** in the UI + logged to the console (`[beam-webrtc] ICE selected: local=host remote=srflx → winner=host`). Direct (host/srflx) is preferred; TURN relay is a last-resort fallback.
+- **Live MB/s display** during transfer.
+
+### Real-world speed reality (read this)
+Throughput depends on two things the code cannot control:
+1. **Connection type**: a direct P2P path (host/srflx ICE candidate — shows "Direct") is fast. A TURN relay (shows "Relay") is meaningfully slower because bytes bounce through a third server. Beam prefers direct and only falls back to relay when the network blocks direct P2P (symmetric NAT, restrictive corporate Wi-Fi). Configure TURN via `NEXT_PUBLIC_TURN_URL` / `NEXT_PUBLIC_TURN_USER` / `NEXT_PUBLIC_TURN_CRED`.
+2. **The slower device's upload bandwidth**: P2P is limited by whichever side uploads slower. A phone on cellular will be slower than a laptop on fiber, regardless of code quality. The speed optimizations above (parallel channels, larger chunks, unordered delivery) raise the ceiling toward the network's actual limit — they don't create bandwidth that isn't there.
 
 ### The WebRTC offer / answer / ICE flow
 

@@ -4,9 +4,9 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ============================================================
-   Beam — Design System
-   Apple-tier. One accent: the "beam" gradient (#0A84FF → #7B61FF).
-   Everything else neutral. Calm, spacious, restrained.
+   Beam — WeTransfer-style warm redesign
+   ONE confident background color (warm coral), ONE floating white
+   card, ONE accent. Friendly, human, confident — not corporate.
    ============================================================ */
 
 @theme inline {
@@ -43,92 +43,100 @@
   --color-popover: var(--popover);
   --color-card-foreground: var(--card-foreground);
   --color-card: var(--card);
-  --radius-sm: calc(var(--radius) - 6px);
+  --radius-sm: calc(var(--radius) - 8px);
   --radius-md: calc(var(--radius) - 4px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 }
 
 :root {
-  /* Apple light palette */
+  /* System font — friendly, humanist. */
   --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
-  --radius: 1rem; /* 16px base → cards/buttons 16px, QR frame uses explicit 24px */
+  /* Generous radius — 24px on the main card, 16px on buttons/chips */
+  --radius: 1.5rem;
 
-  --background: #FAFAFA;
-  --foreground: #1D1D1F;
-  --card: #FFFFFF;
-  --card-foreground: #1D1D1F;
+  /* ---- LIGHT: warm coral full-bleed background, white floating card ---- */
+  --brand: #FF7A5C;            /* confident warm coral — the page */
+  --brand-soft: #FFD9CC;       /* tint for subtle decoration */
+  --brand-deep: #E85D3C;       /* deeper coral — accent for buttons on white */
+
+  --background: #FF7A5C;       /* full-bleed coral */
+  --foreground: #2A1712;       /* warm near-black for text on the card */
+  --card: #FFFFFF;             /* the floating card */
+  --card-foreground: #2A1712;
   --popover: #FFFFFF;
-  --popover-foreground: #1D1D1F;
-  --primary: #1D1D1F;
+  --popover-foreground: #2A1712;
+  --primary: #E85D3C;          /* primary button = deeper coral */
   --primary-foreground: #FFFFFF;
-  --secondary: #F5F5F7;
-  --secondary-foreground: #1D1D1F;
-  --muted: #F5F5F7;
-  --muted-foreground: #6E6E73;
-  --accent: #F5F5F7;
-  --accent-foreground: #1D1D1F;
-  --destructive: #FF3B30;
+  --secondary: #FBF1EC;        /* warm off-white chip */
+  --secondary-foreground: #2A1712;
+  --muted: #FBF1EC;
+  --muted-foreground: #8A6A5E; /* warm gray secondary text */
+  --accent: #FBF1EC;
+  --accent-foreground: #2A1712;
+  --destructive: #D64545;
   --destructive-foreground: #FFFFFF;
-  --border: #E5E5E7;
-  --input: #E5E5E7;
-  --ring: #0A84FF;
-  --chart-1: #0A84FF;
-  --chart-2: #7B61FF;
-  --chart-3: #34C759;
-  --chart-4: #FF9500;
-  --chart-5: #FF3B30;
+  --border: #F0E2DA;           /* warm hairline */
+  --input: #F0E2DA;
+  --ring: #E85D3C;
+  --chart-1: #E85D3C;
+  --chart-2: #FF9E7B;
+  --chart-3: #C4451E;
+  --chart-4: #FFD9CC;
+  --chart-5: #8A6A5E;
   --sidebar: #FFFFFF;
-  --sidebar-foreground: #1D1D1F;
-  --sidebar-primary: #1D1D1F;
+  --sidebar-foreground: #2A1712;
+  --sidebar-primary: #E85D3C;
   --sidebar-primary-foreground: #FFFFFF;
-  --sidebar-accent: #F5F5F7;
-  --sidebar-accent-foreground: #1D1D1F;
-  --sidebar-border: #E5E5E7;
-  --sidebar-ring: #0A84FF;
+  --sidebar-accent: #FBF1EC;
+  --sidebar-accent-foreground: #2A1712;
+  --sidebar-border: #F0E2DA;
+  --sidebar-ring: #E85D3C;
 
-  /* The beam gradient — the single accent */
-  --beam-from: #0A84FF;
-  --beam-to: #7B61FF;
-  --beam-gradient: linear-gradient(135deg, #0A84FF 0%, #7B61FF 100%);
+  /* The brand gradient — coral → warm pink, used for the QR glow + progress */
+  --beam-gradient: linear-gradient(135deg, #FF7A5C 0%, #FF4D8D 100%);
 }
 
 .dark {
-  /* Apple dark palette — true black background */
-  --background: #000000;
-  --foreground: #F5F5F7;
-  --card: #1C1C1E;
-  --card-foreground: #F5F5F7;
-  --popover: #1C1C1E;
-  --popover-foreground: #F5F5F7;
-  --primary: #F5F5F7;
-  --primary-foreground: #000000;
-  --secondary: #1C1C1E;
-  --secondary-foreground: #F5F5F7;
-  --muted: #2C2C2E;
-  --muted-foreground: #A1A1A6;
-  --accent: #2C2C2E;
-  --accent-foreground: #F5F5F7;
-  --destructive: #FF453A;
+  /* ---- DARK: deep warm espresso so the coral still reads through ---- */
+  --brand: #FF7A5C;
+  --brand-soft: #5A2A1C;
+  --brand-deep: #FF9374;
+
+  --background: #2A1812;        /* deep warm brown, not pure black */
+  --foreground: #FBF3EE;
+  --card: #3A251C;              /* warm dark surface card */
+  --card-foreground: #FBF3EE;
+  --popover: #3A251C;
+  --popover-foreground: #FBF3EE;
+  --primary: #FF9374;           /* lighter coral pops on dark */
+  --primary-foreground: #2A1712;
+  --secondary: #4A2F25;
+  --secondary-foreground: #FBF3EE;
+  --muted: #4A2F25;
+  --muted-foreground: #C9A99A;
+  --accent: #4A2F25;
+  --accent-foreground: #FBF3EE;
+  --destructive: #FF6B6B;
   --destructive-foreground: #FFFFFF;
-  --border: #2C2C2E;
-  --input: #2C2C2E;
-  --ring: #0A84FF;
-  --chart-1: #0A84FF;
-  --chart-2: #7B61FF;
-  --chart-3: #30D158;
-  --chart-4: #FF9F0A;
-  --chart-5: #FF453A;
-  --sidebar: #1C1C1E;
-  --sidebar-foreground: #F5F5F7;
-  --sidebar-primary: #F5F5F7;
-  --sidebar-primary-foreground: #000000;
-  --sidebar-accent: #2C2C2E;
-  --sidebar-accent-foreground: #F5F5F7;
-  --sidebar-border: #2C2C2E;
-  --sidebar-ring: #0A84FF;
+  --border: #4A2F25;
+  --input: #4A2F25;
+  --ring: #FF9374;
+  --chart-1: #FF9374;
+  --chart-2: #FFB59E;
+  --chart-3: #E85D3C;
+  --chart-4: #5A2A1C;
+  --chart-5: #C9A99A;
+  --sidebar: #3A251C;
+  --sidebar-foreground: #FBF3EE;
+  --sidebar-primary: #FF9374;
+  --sidebar-primary-foreground: #2A1712;
+  --sidebar-accent: #4A2F25;
+  --sidebar-accent-foreground: #FBF3EE;
+  --sidebar-border: #4A2F25;
+  --sidebar-ring: #FF9374;
 }
 
 @layer base {
@@ -143,22 +151,22 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
-    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
-    letter-spacing: -0.011em;
+    font-feature-settings: "cv02", "cv03", "cv11";
+    letter-spacing: -0.01em;
   }
-  /* Soft blue focus ring — never remove focus indication entirely */
+  /* Soft focus ring — coral, never remove focus indication */
   :focus-visible {
     outline: 2px solid var(--ring);
     outline-offset: 2px;
-    border-radius: 6px;
+    border-radius: 8px;
   }
   ::selection {
-    background: color-mix(in srgb, var(--beam-from) 22%, transparent);
+    background: color-mix(in srgb, var(--brand-deep) 28%, transparent);
   }
 }
 
 /* ============================================================
-   Beam gradient utilities
+   Brand + helper utilities
    ============================================================ */
 @layer utilities {
   .bg-beam {
@@ -170,28 +178,25 @@
     background-clip: text;
     color: transparent;
   }
-  .border-beam {
-    border-image: var(--beam-gradient) 1;
-  }
-  /* Subtle elevation shadow for floating cards (QR frame etc.) */
-  .shadow-beam {
+  /* The floating-card shadow — soft, warm, gives real depth */
+  .shadow-float {
     box-shadow:
-      0 1px 2px rgba(0, 0, 0, 0.04),
-      0 8px 24px rgba(0, 0, 0, 0.06),
-      0 0 0 1px rgba(229, 229, 231, 0.6);
+      0 1px 2px rgba(42, 23, 18, 0.06),
+      0 12px 32px rgba(42, 23, 18, 0.12),
+      0 32px 64px -16px rgba(42, 23, 18, 0.16);
   }
-  .dark .shadow-beam {
+  .dark .shadow-float {
     box-shadow:
       0 1px 2px rgba(0, 0, 0, 0.4),
-      0 12px 40px rgba(0, 0, 0, 0.5),
-      0 0 0 1px rgba(44, 44, 46, 0.8);
+      0 12px 32px rgba(0, 0, 0, 0.45),
+      0 32px 64px -16px rgba(0, 0, 0, 0.55);
   }
-  /* Beam glow halo behind the QR frame */
+  /* QR / active glow — coral halo */
   .beam-glow {
     box-shadow:
-      0 0 0 1px color-mix(in srgb, var(--beam-from) 30%, transparent),
-      0 0 40px 4px color-mix(in srgb, var(--beam-from) 28%, transparent),
-      0 0 80px 12px color-mix(in srgb, var(--beam-to) 22%, transparent);
+      0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent),
+      0 0 48px 6px color-mix(in srgb, var(--brand) 35%, transparent),
+      0 0 96px 16px color-mix(in srgb, #FF4D8D 22%, transparent);
   }
 
   /* Custom scrollbar for long file lists */
@@ -199,65 +204,42 @@
     scrollbar-width: thin;
     scrollbar-color: var(--border) transparent;
   }
-  .scroll-beam::-webkit-scrollbar {
-    width: 8px;
-    height: 8px;
-  }
-  .scroll-beam::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .scroll-beam::-webkit-scrollbar-thumb {
-    background: var(--border);
-    border-radius: 999px;
-  }
-  .scroll-beam::-webkit-scrollbar-thumb:hover {
-    background: var(--muted-foreground);
+  .scroll-beam::-webkit-scrollbar { width: 8px; height: 8px; }
+  .scroll-beam::-webkit-scrollbar-track { background: transparent; }
+  .scroll-beam::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
+  .scroll-beam::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+
+  /* Subtle dotted texture for warmth (used on the coral background) */
+  .texture-dots {
+    background-image: radial-gradient(color-mix(in srgb, #FFFFFF 10%, transparent) 1px, transparent 1px);
+    background-size: 22px 22px;
   }
 }
 
 /* ============================================================
-   Motion — calm, deliberate. Reduced-motion always respected.
+   Motion — calm, friendly. Reduced-motion always respected.
    ============================================================ */
 
-/* AirDrop-style radar pulse around the QR frame while waiting for a device */
+/* AirDrop-style radar pulse around the QR frame while waiting */
 @keyframes beam-pulse {
-  0% {
-    transform: scale(1);
-    opacity: 0.55;
-  }
-  70% {
-    transform: scale(1.35);
-    opacity: 0;
-  }
-  100% {
-    transform: scale(1.35);
-    opacity: 0;
-  }
+  0% { transform: scale(1); opacity: 0.5; }
+  70% { transform: scale(1.35); opacity: 0; }
+  100% { transform: scale(1.35); opacity: 0; }
 }
-.animate-beam-pulse {
-  animation: beam-pulse 2.6s cubic-bezier(0.22, 1, 0.36, 1) infinite;
-}
+.animate-beam-pulse { animation: beam-pulse 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
 
-/* Slow rotating conic border glow — the "beam" sweeping the QR frame */
-@keyframes beam-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-.animate-beam-spin {
-  animation: beam-spin 6s linear infinite;
-}
+/* Slow rotating conic halo — the beam sweeping the QR frame */
+@keyframes beam-spin { to { transform: rotate(360deg); } }
+.animate-beam-spin { animation: beam-spin 7s linear infinite; }
 
-/* Soft breathing opacity for the waiting status dot */
+/* Breathing dot for the waiting status */
 @keyframes beam-breathe {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
 }
-.animate-beam-breathe {
-  animation: beam-breathe 2.2s ease-in-out infinite;
-}
+.animate-beam-breathe { animation: beam-breathe 2.4s ease-in-out infinite; }
 
-/* Calm checkmark draw for the complete state */
+/* Calm checkmark draw */
 @keyframes beam-check {
   0% { stroke-dashoffset: 48; }
   100% { stroke-dashoffset: 0; }
@@ -270,27 +252,28 @@
 
 /* Cross-fade + soft scale for state transitions */
 @keyframes beam-fade-in {
-  from { opacity: 0; transform: translateY(6px) scale(0.985); }
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
-.animate-beam-fade {
-  animation: beam-fade-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
+.animate-beam-fade { animation: beam-fade-in 0.35s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
-/* Progress bar shimmer when indeterminate */
+/* Floating decorative blobs drifting slowly behind the card */
+@keyframes beam-drift {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  50% { transform: translate(12px, -8px) scale(1.05); }
+}
+.animate-beam-drift { animation: beam-drift 12s ease-in-out infinite; }
+
+/* Progress shimmer when indeterminate */
 @keyframes beam-shimmer {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(250%); }
 }
-.animate-beam-shimmer {
-  animation: beam-shimmer 1.4s ease-in-out infinite;
-}
+.animate-beam-shimmer { animation: beam-shimmer 1.4s ease-in-out infinite; }
 
 /* Reduced motion — disable looping / decorative animation */
 @media (prefers-reduced-motion: reduce) {
-  *,
-  *::before,
-  *::after {
+  *, *::before, *::after {
     animation-duration: 0.001ms !important;
     animation-iteration-count: 1 !important;
     transition-duration: 0.001ms !important;

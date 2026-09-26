@@ -30,3 +30,24 @@ model Post {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 }
+
+// ─── Path B: server-side file storage fallback ─────────────────────────────────
+// Used by the "send it, they grab it later" mode. Each row represents one
+// encrypted-at-rest file blob on disk plus its per-file key/IV. The `id` IS
+// the public download token (one-time-use link). Auto-deleted by
+// `cleanupExpired()` no later than 5 min after upload OR immediately on the
+// first successful full download (whichever comes first).
+model StoredFile {
+  id           String    @id @default(cuid()) // also the public download token
+  sessionId    String                            // the 6-char beam session id (for grouping/lookup)
+  name         String                            // original filename
+  mime         String    @default("application/octet-stream")
+  size         Int                               // bytes
+  encPath      String                            // absolute path to the encrypted blob on disk
+  iv           String                            // base64 AES-GCM IV (12 bytes)
+  key          String                            // base64 AES-256 key (32 bytes)
+  createdAt    DateTime  @default(now())
+  expiresAt    DateTime                          // createdAt + 5 min
+  downloadedAt DateTime?                         // set on first full download → triggers delete
+  deleted      Boolean   @default(false)
+}

@@ -8,6 +8,7 @@ import { Footer } from "@/components/beam/footer";
 import { HowItWorks, Privacy } from "@/components/beam/sections";
 import { SenderPanel } from "@/components/beam/sender-panel";
 import { ReceiverPanel } from "@/components/beam/receiver-panel";
+import { BackgroundDecor } from "@/components/beam/background-decor";
 
 export function BeamApp() {
   const params = useSearchParams();
@@ -26,18 +27,24 @@ export function BeamApp() {
     addMoreFiles,
     reorderFiles,
     sendPastedText,
+    setStoreMode,
+    downloadStored,
   } = useBeamSession(sessionIdParam);
 
   const isReceiver = state.mode === "receiver";
 
   const handleSaveAll = React.useCallback(() => {
     state.files.forEach((f) => {
-      if (f.url) saveFile(f.url, f.name);
+      if (state.storeMode) {
+        // Path B: trigger one-time-use downloads sequentially.
+        if (f.id) void downloadStored(f.id);
+      } else if (f.url) {
+        saveFile(f.url, f.name);
+      }
     });
-  }, [state.files, saveFile]);
+  }, [state.files, state.storeMode, saveFile, downloadStored]);
 
-  // ---- Global keyboard shortcuts ----
-  // F or B  → open the file browser (idle), Esc → cancel/reset (waiting/transfer/done/error)
+  // Global keyboard shortcuts: F/B browse, Esc reset.
   React.useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const tag = (document.activeElement?.tagName ?? "").toLowerCase();
@@ -45,8 +52,7 @@ export function BeamApp() {
       if (typing) return;
       if ((e.key === "f" || e.key === "b") && state.phase === "idle") {
         e.preventDefault();
-        const input = document.querySelector<HTMLInputElement>('input[type="file"]');
-        input?.click();
+        document.querySelector<HTMLInputElement>('input[type="file"]')?.click();
       } else if (e.key === "Escape" && state.phase !== "idle") {
         e.preventDefault();
         reset();
@@ -58,19 +64,20 @@ export function BeamApp() {
 
   if (isReceiver) {
     return (
-      <div className="flex min-h-screen flex-col bg-background">
+      <div className="relative flex min-h-screen flex-col">
+        <BackgroundDecor />
         <Nav />
-        <main className="flex flex-1 items-start justify-center px-5 py-12 sm:items-center sm:py-20">
-          <div className="animate-beam-fade w-full max-w-[520px]">
+        <main className="relative z-10 flex flex-1 items-start justify-center px-5 py-12 sm:items-center sm:py-16">
+          <div className="animate-beam-fade w-full max-w-[540px]">
             <ReceiverPanel
               state={state}
-              onSave={saveFile}
+              onSave={(url, name) => saveFile(url, name)}
               onSaveAll={handleSaveAll}
               onShareImage={shareImage}
               onShareAll={shareAll}
               onCopyAllText={copyAllText}
+              onDownloadStored={downloadStored}
               onReset={() => {
-                // Receiver "start over" → drop the ?r= param and become a sender.
                 if (typeof window !== "undefined") {
                   window.history.replaceState({}, "", "/");
                   window.location.reload();
@@ -84,50 +91,28 @@ export function BeamApp() {
     );
   }
 
-  // Sender / landing view
   const showMarketing = state.phase === "idle" || state.phase === "waiting";
 
   return (
-    <div className="relative flex min-h-screen flex-col bg-background">
-      {/* Ambient beam-tinted glow behind the hero — very subtle, never a full wash */}
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-x-0 top-0 h-[520px] overflow-hidden"
-        style={{
-          background:
-            "radial-gradient(60% 80% at 50% 0%, color-mix(in srgb, var(--beam-from) 9%, transparent) 0%, transparent 70%)",
-        }}
-      />
+    <div className="relative flex min-h-screen flex-col">
+      <BackgroundDecor />
       <Nav />
-      <main className="relative flex-1">
+      <main className="relative z-10 flex-1">
         {/* Hero */}
-        <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-14 text-center sm:px-8 sm:pb-24 sm:pt-20">
+        <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-10 text-center sm:px-8 sm:pb-20 sm:pt-14">
           <div className="animate-beam-fade">
-            {/* Trust badge row */}
-            <div className="mb-7 flex items-center justify-center gap-2">
-              <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-medium text-muted-foreground backdrop-blur-sm">
-                <span className="h-1.5 w-1.5 rounded-full bg-beam" aria-hidden />
-                Peer-to-peer
-              </span>
-              <span className="hidden text-muted-foreground/40 sm:inline">·</span>
-              <span className="hidden rounded-full px-2 py-1 text-xs font-medium text-muted-foreground sm:inline">
-                Encrypted
-              </span>
-              <span className="hidden text-muted-foreground/40 sm:inline">·</span>
-              <span className="hidden rounded-full px-2 py-1 text-xs font-medium text-muted-foreground sm:inline">
-                No account
-              </span>
-            </div>
-            <h1 className="text-balance text-[34px] font-semibold leading-[1.06] tracking-tight text-foreground sm:text-[48px] lg:text-[60px]">
-              Send files without the cables.
+            <p className="mb-4 text-sm font-medium text-white/70">
+              Files that go straight from you to them
+            </p>
+            <h1 className="text-balance text-[38px] font-bold leading-[1.04] tracking-tight text-white sm:text-[52px] lg:text-[64px]">
+              Just drop your files and scan.
             </h1>
-            <p className="mx-auto mt-4 max-w-[52ch] text-[16px] leading-relaxed text-muted-foreground sm:mt-5 sm:text-[19px]">
-              Open this page on any device, pick your files, and scan the QR code with a phone.
-              They transfer directly between devices — no app to install, nothing uploaded.
+            <p className="mx-auto mt-4 max-w-[46ch] text-[17px] leading-relaxed text-white/80 sm:text-[19px]">
+              They go directly to the other device — peer-to-peer, encrypted, gone the moment they land. No app, no account, no servers in the middle.
             </p>
           </div>
 
-          <div className="mt-10 flex justify-center sm:mt-14">
+          <div className="mt-9 flex justify-center sm:mt-12">
             <div className="animate-beam-fade w-full max-w-[460px]">
               <SenderPanel
                 state={state}
@@ -139,6 +124,7 @@ export function BeamApp() {
                 onAddMoreFiles={addMoreFiles}
                 onReorderFiles={reorderFiles}
                 onPasteText={sendPastedText}
+                onToggleStoreMode={setStoreMode}
               />
             </div>
           </div>
