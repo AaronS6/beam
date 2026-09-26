@@ -10,12 +10,17 @@ import {
   RotateCcw,
   Plus,
   WifiOff,
+  Link2,
+  Check as CheckIcon,
+  ShieldCheck,
+  FilePlus2,
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { BeamQR } from "./beam-qr";
 import { FileDropzone } from "./file-dropzone";
 import { FileRow } from "./file-row";
 import { ProgressRing } from "./progress-ring";
+import { SessionCountdown } from "./session-countdown";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
@@ -24,15 +29,40 @@ export function SenderPanel({
   onFiles,
   onCancel,
   onReset,
+  onCopyLink,
+  onRemoveFile,
+  onAddMoreFiles,
 }: {
   state: SessionState;
   onFiles: (files: File[]) => void;
   onCancel: () => void;
   onReset: () => void;
+  onCopyLink: () => Promise<boolean>;
+  onRemoveFile: (id: string) => void;
+  onAddMoreFiles: (files: File[]) => void;
 }) {
-  const { phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice } = state;
+  const { phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice, createdAt } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
+
+  // Copy-link feedback
+  const [copied, setCopied] = React.useState(false);
+  const handleCopy = async () => {
+    const ok = await onCopyLink();
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }
+  };
+
+  // Add-more-files hidden input (waiting state)
+  const moreInputRef = React.useRef<HTMLInputElement>(null);
+  const handleAddMore = (list: FileList | null) => {
+    if (!list || list.length === 0) return;
+    onAddMoreFiles(Array.from(list));
+  };
+
+  const canEditQueue = phase === "waiting" || phase === "connected";
 
   return (
     <div className="flex flex-col items-center">
@@ -68,10 +98,12 @@ export function SenderPanel({
                 </span>
               </ProgressRing>
               <p className="mt-4 text-sm text-muted-foreground">
-                Sending {files.filter((f) => f.status !== "done").length + 1 <= files.length
-                  ? `to ${peerDevice?.label ?? "device"}`
-                  : ""}
+                Sending to {peerDevice?.label ?? "device"}
               </p>
+              <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/50 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
+                <ShieldCheck className="h-3 w-3" strokeWidth={2} />
+                Encrypted · peer-to-peer
+              </div>
             </div>
           </BeamStage>
         )}
@@ -151,10 +183,28 @@ export function SenderPanel({
       {/* ---------- Status + actions below the stage ---------- */}
       <div className="mt-7 w-full max-w-[460px]">
         {(phase === "waiting" || phase === "connected") && (
-          <div className="flex flex-col items-center text-center">
+          <div className="flex flex-col items-center gap-3 text-center">
             <div className="flex items-center gap-2 text-[15px] text-muted-foreground">
               <span className="h-2 w-2 animate-beam-breathe rounded-full bg-beam" />
               Waiting for a device to connect
+            </div>
+            <div className="flex items-center gap-3 text-xs text-muted-foreground">
+              <button
+                type="button"
+                onClick={handleCopy}
+                className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1.5 font-medium text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
+              >
+                {copied ? (
+                  <CheckIcon className="h-3.5 w-3.5 text-foreground/70" strokeWidth={2} />
+                ) : (
+                  <Link2 className="h-3.5 w-3.5" strokeWidth={2} />
+                )}
+                {copied ? "Link copied" : "Copy link"}
+              </button>
+              <span className="inline-flex items-center gap-1.5">
+                <Clock className="h-3.5 w-3.5" strokeWidth={2} />
+                Expires in <SessionCountdown createdAt={createdAt} />
+              </span>
             </div>
           </div>
         )}
@@ -174,8 +224,32 @@ export function SenderPanel({
         {files.length > 0 && phase !== "done" && phase !== "expired" && (
           <div className="space-y-2">
             {files.map((f) => (
-              <FileRow key={f.id} file={f} />
+              <FileRow
+                key={f.id}
+                file={f}
+                onRemove={canEditQueue ? onRemoveFile : undefined}
+              />
             ))}
+            {canEditQueue && (
+              <button
+                type="button"
+                onClick={() => moreInputRef.current?.click()}
+                className="flex w-full items-center justify-center gap-2 rounded-2xl border border-dashed border-border py-3 text-sm font-medium text-muted-foreground transition-colors hover:border-foreground/30 hover:text-foreground"
+              >
+                <FilePlus2 className="h-4 w-4" strokeWidth={2} />
+                Add more files
+              </button>
+            )}
+            <input
+              ref={moreInputRef}
+              type="file"
+              multiple
+              className="sr-only"
+              onChange={(e) => {
+                handleAddMore(e.target.files);
+                e.target.value = "";
+              }}
+            />
           </div>
         )}
 

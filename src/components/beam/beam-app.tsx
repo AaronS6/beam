@@ -12,7 +12,16 @@ import { ReceiverPanel } from "@/components/beam/receiver-panel";
 export function BeamApp() {
   const params = useSearchParams();
   const sessionIdParam = params.get("r");
-  const { state, beginSending, reset, cancel, saveFile } = useBeamSession(sessionIdParam);
+  const {
+    state,
+    beginSending,
+    reset,
+    cancel,
+    saveFile,
+    copyLink,
+    removeFile,
+    addMoreFiles,
+  } = useBeamSession(sessionIdParam);
 
   const isReceiver = state.mode === "receiver";
 
@@ -51,9 +60,18 @@ export function BeamApp() {
   const showMarketing = state.phase === "idle" || state.phase === "waiting";
 
   return (
-    <div className="flex min-h-screen flex-col bg-background">
+    <div className="relative flex min-h-screen flex-col bg-background">
+      {/* Ambient beam-tinted glow behind the hero — very subtle, never a full wash */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-[520px] overflow-hidden"
+        style={{
+          background:
+            "radial-gradient(60% 80% at 50% 0%, color-mix(in srgb, var(--beam-from) 9%, transparent) 0%, transparent 70%)",
+        }}
+      />
       <Nav />
-      <main className="flex-1">
+      <main className="relative flex-1">
         {/* Hero */}
         <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-14 text-center sm:px-8 sm:pb-24 sm:pt-20">
           <div className="animate-beam-fade">
@@ -73,6 +91,9 @@ export function BeamApp() {
                 onFiles={beginSending}
                 onCancel={cancel}
                 onReset={reset}
+                onCopyLink={copyLink}
+                onRemoveFile={removeFile}
+                onAddMoreFiles={addMoreFiles}
               />
             </div>
           </div>

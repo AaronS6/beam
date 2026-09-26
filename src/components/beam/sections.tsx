@@ -40,13 +40,13 @@ export function HowItWorks() {
         {STEPS.map((s) => (
           <div
             key={s.n}
-            className="rounded-2xl border border-border bg-card p-6 transition-shadow hover:shadow-beam"
+            className="group rounded-2xl border border-border bg-card p-6 transition-all duration-300 hover:-translate-y-0.5 hover:border-foreground/15 hover:shadow-beam"
           >
             <div className="mb-5 flex items-center justify-between">
-              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-beam text-white">
+              <span className="flex h-10 w-10 items-center justify-center rounded-xl bg-beam text-white transition-transform duration-300 group-hover:scale-105">
                 <s.icon className="h-5 w-5" strokeWidth={1.75} />
               </span>
-              <span className="text-sm font-medium tabular-nums text-muted-foreground">
+              <span className="text-sm font-medium tabular-nums text-muted-foreground/60">
                 {s.n}
               </span>
             </div>

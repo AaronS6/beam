@@ -28,6 +28,7 @@ export type FileItem = {
   received: number;
   status: "queued" | "transferring" | "done" | "error";
   url?: string;
+  text?: string; // populated for small text-like files so the receiver can preview/copy
 };
 
 export type Phase = TransferState | "expired";
@@ -43,6 +44,7 @@ export type SessionState = {
   receivedBytes: number;
   speed: number; // bytes/sec
   error: string | null;
+  createdAt: number | null; // epoch ms — session start, for the expiry countdown
 };
 
 const INITIAL: SessionState = {
@@ -56,6 +58,7 @@ const INITIAL: SessionState = {
   receivedBytes: 0,
   speed: 0,
   error: null,
+  createdAt: null,
 };
 
 export function useBeamSession(sessionIdParam?: string | null) {
@@ -184,6 +187,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         receivedBytes: 0,
         phase: "waiting",
         error: null,
+        createdAt: Date.now(),
       });
 
       // Tear down any prior transfer before starting fresh.
@@ -197,8 +201,9 @@ export function useBeamSession(sessionIdParam?: string | null) {
       signaling.onConnect = () => {
         signaling.createSession(sessionId, deviceInfo());
       };
-      signaling.onSessionCreated = () => {
-        /* acknowledged — waiting for a peer to scan the QR */
+      signaling.onSessionCreated = ({ createdAt }) => {
+        // Server confirmed the session — record the start time for the countdown.
+        patch({ createdAt });
       };
       signaling.onPeerJoined = ({ receiver }) => {
         // A receiver scanned the QR. Build the transfer + create the offer.
@@ -225,6 +230,49 @@ export function useBeamSession(sessionIdParam?: string | null) {
     },
     [patch],
   );
+
+  // ---- Sender queue management (only valid while waiting, before a peer connects) ----
+  const removeFile = useCallback(
+    (id: string) => {
+      setState((s) => {
+        if (s.phase !== "waiting" && s.phase !== "connected") return s;
+        const idx = s.files.findIndex((f) => f.id === id);
+        if (idx === -1) return s;
+        const files = s.files.filter((f) => f.id !== id);
+        // Sync the raw File objects (same order) so the transfer sends the right set.
+        rawFilesRef.current = rawFilesRef.current.filter((_, i) => i !== idx);
+        const totalBytes = files.reduce((a, b) => a + b.size, 0);
+        if (files.length === 0) {
+          // Nothing left to send — tear down the waiting session.
+          transferRef.current?.close();
+          transferRef.current = null;
+          signalingRef.current?.disconnect();
+          signalingRef.current = null;
+          return { ...s, ...INITIAL, mode: s.mode };
+        }
+        return { ...s, files, totalBytes };
+      });
+    },
+    [],
+  );
+
+  const addMoreFiles = useCallback((more: File[]) => {
+    if (more.length === 0) return;
+    setState((s) => {
+      if (s.phase !== "waiting" && s.phase !== "connected") return s;
+      const extra: FileItem[] = more.map((f, i) => ({
+        id: `${Date.now()}-${s.files.length + i}`,
+        name: f.name || `file-${s.files.length + i + 1}`,
+        size: f.size,
+        mime: f.type || undefined,
+        received: 0,
+        status: "queued",
+      }));
+      rawFilesRef.current = [...rawFilesRef.current, ...more];
+      const files = [...s.files, ...extra];
+      return { ...s, files, totalBytes: files.reduce((a, b) => a + b.size, 0) };
+    });
+  }, []);
 
   const reset = useCallback(() => {
     transferRef.current?.releaseAll();
@@ -257,9 +305,19 @@ export function useBeamSession(sessionIdParam?: string | null) {
     a.remove();
   }, []);
 
+  const copyLink = useCallback(async (): Promise<boolean> => {
+    if (!state.qrUrl) return false;
+    try {
+      await navigator.clipboard.writeText(state.qrUrl);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [state.qrUrl]);
+
   return useMemo(
-    () => ({ state, beginSending, reset, cancel, saveFile }),
-    [state, beginSending, reset, cancel, saveFile],
+    () => ({ state, beginSending, reset, cancel, saveFile, copyLink, removeFile, addMoreFiles }),
+    [state, beginSending, reset, cancel, saveFile, copyLink, removeFile, addMoreFiles],
   );
 }
 
@@ -356,12 +414,36 @@ function makeTransfer(
     });
   };
   t.onFileComplete = (file: IncomingFile, url: string) => {
-    setState((s) => ({
-      ...s,
-      files: s.files.map((f) =>
-        f.id === file.id ? { ...f, status: "done" as const, received: f.size, url: url || f.url } : f,
-      ),
-    }));
+    // For small text-like files, read the content so the receiver can preview +
+    // copy it inline (no forced download needed for a URL or code snippet).
+    const isText = isTextLike(file.name, file.mime);
+    if (url && isText && file.size > 0 && file.size <= 256 * 1024) {
+      fetch(url)
+        .then((r) => r.text())
+        .then((text) => {
+          setState((s) => ({
+            ...s,
+            files: s.files.map((f) =>
+              f.id === file.id ? { ...f, status: "done" as const, received: f.size, url, text } : f,
+            ),
+          }));
+        })
+        .catch(() => {
+          setState((s) => ({
+            ...s,
+            files: s.files.map((f) =>
+              f.id === file.id ? { ...f, status: "done" as const, received: f.size, url } : f,
+            ),
+          }));
+        });
+    } else {
+      setState((s) => ({
+        ...s,
+        files: s.files.map((f) =>
+          f.id === file.id ? { ...f, status: "done" as const, received: f.size, url: url || f.url } : f,
+        ),
+      }));
+    }
   };
   t.onAllComplete = () => {
     patch({ phase: "done", speed: 0 });
@@ -373,4 +455,19 @@ function makeTransfer(
 
 function speedRefResetLocal() {
   // no-op; the speed sampler resets itself via its own closure.
+}
+
+/** True for files we should inline-preview as text (snippets, URLs, notes). */
+function isTextLike(name: string, mime?: string): boolean {
+  if (mime) {
+    if (mime.startsWith("text/")) return true;
+    if (mime === "application/json" || mime === "application/xml") return true;
+  }
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  return [
+    "txt", "md", "markdown", "json", "js", "ts", "tsx", "jsx", "css", "scss",
+    "html", "htm", "xml", "yaml", "yml", "csv", "tsv", "sh", "py", "rb", "go",
+    "rs", "java", "c", "cc", "cpp", "h", "hpp", "sql", "toml", "ini", "env",
+    "log", "conf", "gitignore", "env",
+  ].includes(ext);
 }

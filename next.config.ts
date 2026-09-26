@@ -7,6 +7,9 @@ const nextConfig: NextConfig = {
     ignoreBuildErrors: true,
   },
   reactStrictMode: false,
+  // Allow the sandbox preview gateway origin to request /_next/* assets without
+  // the dev-server cross-origin warning. Wildcards cover any preview subdomain.
+  allowedDevOrigins: ["*.space-z.ai", "*.z.ai", "localhost"],
 };
 
 export default nextConfig;

@@ -134,3 +134,49 @@ Unresolved / next-phase recommendations:
 - Receiver reconnect after tab-close (re-scan same session within 60s grace) works at signaling level but full RTCPeerConnection renegotiation on a brand-new receiver tab is not heavily tested.
 - Multi-instance signaling would need a Redis adapter for horizontal scale (documented in signaling README).
 - Could add: paste-to-send, text/snippet sharing, drag-reorder of queue, transfer history (ephemeral).
+
+---
+Task ID: review-1
+Agent: webDevReview (cron)
+Task: QA pass + new features (text sharing, copy link, countdown, queue management) + styling polish + bug fix
+
+Work Log:
+- QA: verified both servers healthy (next:3000, signaling:3003), ran full E2E two-tab transfer — passes, no regressions. Captured zero console errors.
+- Fixed Next.js dev warning: added `allowedDevOrigins: ["*.space-z.ai","*.z.ai","localhost"]` to next.config.ts so the preview gateway can request /_next/* assets without the cross-origin warning.
+
+NEW FEATURES:
+1. Text/snippet sharing — FileDropzone now has a Files/Text mode toggle. Text mode: textarea + char/byte count + "Send text" button (⌘/Ctrl+Enter shortcut). Creates a File from the text; auto-names it "link.txt" for URLs, keeps a detected filename, else "snippet.txt". Reuses the entire existing DataChannel pipeline. (src/components/beam/file-dropzone.tsx)
+2. Receiver text preview — for small text-like files (<256KB, text/* or code extensions), the receiver assembles the blob, reads it as text, and the FileRow shows an expandable "Snippet" preview + a "Copy" button (with "Copied" feedback) alongside "Save". (src/hooks/use-beam-session.ts isTextLike + onFileComplete, src/components/beam/file-row.tsx)
+3. Copy session link — sender waiting state gets a "Copy link" button (clipboard.writeText, "Link copied" feedback) for laptop-to-laptop pairing without a camera. (use-beam-session.ts copyLink, sender-panel.tsx)
+4. Session expiry countdown — live mm:ss countdown from createdAt (10-min TTL), turns amber in the final minute. (src/components/beam/session-countdown.tsx)
+5. Queue management — while waiting (before a peer connects): each queued file row has a remove (×) button; "Add more files" dashed button appends to the queue. Both sync rawFilesRef so the transfer sends the correct set. Removing the last file tears down the waiting session back to idle. (use-beam-session.ts removeFile/addMoreFiles)
+
+BUG FIX (important):
+- "Send more files" / reset race condition: BeamTransfer.close() now detaches all RTCPeerConnection + RTCDataChannel event handlers (onicecandidate, oniceconnectionstatechange, ondatachannel, dc.onopen/onclose/onmessage) BEFORE closing the connections. Previously, the async onclose/oniceconnectionstatechange fired after reset() and overwrote the freshly-reset idle state with a spurious "Connection closed" error. Verified: "Send more files" now cleanly returns to the dropzone. (src/lib/webrtc.ts close())
+
+STYLING POLISH:
+- Ambient hero glow: subtle radial beam-tinted gradient (9% blue) behind the hero, top-anchored, never a full wash. (beam-app.tsx)
+- HowItWorks cards: group hover with -translate-y-0.5 lift, border highlight, icon scale-105 on hover. (sections.tsx)
+- Transferring state: added "Encrypted · peer-to-peer" badge with ShieldCheck icon below the progress ring. (sender-panel.tsx)
+- Refined muted numerals (text-muted-foreground/60) on step numbers.
+
+E2E VERIFICATION (agent-browser):
+- Text sharing: typed "https://beam.app — check this out!" → Send text → sender shows QR + link.txt + Copy link + 9:58 countdown. Receiver: transfer complete 100%, "Copy text" + "Save" + expandable "Snippet" preview showing the text inline. Sender shows "Sent". ✅
+- Remove from queue: uploaded fileA.txt + fileB.txt, removed fileA → only fileB transferred to receiver. ✅
+- Add more files button present + functional. ✅
+- "Send more files" after completion → cleanly returns to idle dropzone (bug fix confirmed). ✅
+- Dark mode: html class light→dark on toggle, ambient glow + QR frame render correctly, high contrast readable. VLM-confirmed. ✅
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- 5 new user-facing features shipped + 1 important bug fixed (reset race condition).
+- New files: src/components/beam/session-countdown.tsx.
+- Modified: next.config.ts, src/lib/webrtc.ts (close fix), src/hooks/use-beam-session.ts (createdAt/removeFile/addMoreFiles/copyLink/text preview), src/components/beam/{beam-app,file-dropzone,file-row,sender-panel,receiver-panel,sections}.tsx.
+- All E2E flows green. Project stable and richer than the initial build.
+
+Next-phase candidates (not started):
+- Drag-reorder of the waiting queue (currently remove-only).
+- "Copy all text" aggregate action on receiver when multiple text files arrive.
+- Paste-to-send: intercept paste event anywhere in idle state to auto-fill text mode.
+- Connection-quality indicator (signal bars) using ICE candidate pair stats.
+- Optional: image thumbnail preview on receiver for image files.

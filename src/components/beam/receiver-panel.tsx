@@ -33,6 +33,10 @@ export function ReceiverPanel({
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
   const completedCount = files.filter((f) => f.status === "done").length;
 
+  const copyText = React.useCallback((text: string) => {
+    navigator.clipboard?.writeText(text).catch(() => {});
+  }, []);
+
   // Connecting / waiting state — before the data channel opens.
   if (phase === "waiting") {
     return (
@@ -149,7 +153,12 @@ export function ReceiverPanel({
       {files.length > 0 ? (
         <div className="space-y-2">
           {files.map((f) => (
-            <FileRow key={f.id} file={f} onSave={phase === "done" ? undefined : onSave} />
+            <FileRow
+              key={f.id}
+              file={f}
+              onSave={onSave}
+              onCopyText={copyText}
+            />
           ))}
         </div>
       ) : (

@@ -406,9 +406,23 @@ export class BeamTransfer {
     this.close();
   }
 
-  /** Tear down the peer connection + channel. */
+  /** Tear down the peer connection + channel. Suppresses callbacks so an
+   *  intentional close doesn't surface as a spurious "Connection closed" error. */
   close() {
     this.sending = false;
+    // Detach all callbacks BEFORE closing so the async onclose /
+    // oniceconnectionstatechange events don't overwrite React state after a
+    // reset / "send more files" / intentional teardown.
+    if (this.pc) {
+      this.pc.onicecandidate = null;
+      this.pc.oniceconnectionstatechange = null;
+      this.pc.ondatachannel = null;
+    }
+    if (this.dc) {
+      this.dc.onopen = null;
+      this.dc.onclose = null;
+      this.dc.onmessage = null;
+    }
     try {
       this.dc?.close();
     } catch {
