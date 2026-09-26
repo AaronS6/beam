@@ -397,6 +397,48 @@ export function useBeamSession(sessionIdParam?: string | null) {
     [],
   );
 
+  /** Copy the text of all received text files into the clipboard, joined with
+   *  a separator. Returns the number of files copied. */
+  const copyAllText = useCallback(async (): Promise<number> => {
+    const texts = state.files.filter((f) => f.text).map((f) => f.text as string);
+    if (texts.length === 0) return 0;
+    const joined = texts.join("\n\n— — —\n\n");
+    try {
+      await navigator.clipboard.writeText(joined);
+    } catch {
+      return 0;
+    }
+    return texts.length;
+  }, [state.files]);
+
+  /** Share all received files at once via the native share sheet (Web Share API
+   *  with a files[] array). Falls back to downloading each one. */
+  const shareAll = useCallback(async (): Promise<"shared" | "downloaded" | "failed"> => {
+    const done = state.files.filter((f) => f.url);
+    if (done.length === 0) return "failed";
+    if (typeof navigator === "undefined" || !navigator.canShare) {
+      // Fall back to downloading all.
+      done.forEach((f) => saveFile(f.url!, f.name));
+      return "downloaded";
+    }
+    try {
+      const files: File[] = [];
+      for (const f of done) {
+        const res = await fetch(f.url!);
+        const blob = await res.blob();
+        files.push(new File([blob], f.name, { type: f.mime || blob.type || "application/octet-stream" }));
+      }
+      if (!navigator.canShare({ files })) {
+        done.forEach((f) => saveFile(f.url!, f.name));
+        return "downloaded";
+      }
+      await navigator.share({ files, title: `${done.length} files from Beam` });
+      return "shared";
+    } catch {
+      return "failed";
+    }
+  }, [state.files, saveFile]);
+
   const copyLink = useCallback(async (): Promise<boolean> => {
     if (!state.qrUrl) return false;
     try {
@@ -415,6 +457,8 @@ export function useBeamSession(sessionIdParam?: string | null) {
       cancel,
       saveFile,
       shareImage,
+      shareAll,
+      copyAllText,
       copyLink,
       removeFile,
       addMoreFiles,
@@ -428,6 +472,8 @@ export function useBeamSession(sessionIdParam?: string | null) {
       cancel,
       saveFile,
       shareImage,
+      shareAll,
+      copyAllText,
       copyLink,
       removeFile,
       addMoreFiles,

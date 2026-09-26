@@ -10,6 +10,8 @@ import {
   RotateCcw,
   WifiOff,
   Smartphone,
+  Share2,
+  Copy,
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { FileRow } from "./file-row";
@@ -24,12 +26,16 @@ export function ReceiverPanel({
   onSave,
   onSaveAll,
   onShareImage,
+  onShareAll,
+  onCopyAllText,
   onReset,
 }: {
   state: SessionState;
   onSave: (url: string, name: string) => void;
   onSaveAll: () => void;
   onShareImage: (url: string, name: string, mime: string) => void;
+  onShareAll: () => Promise<"shared" | "downloaded" | "failed">;
+  onCopyAllText: () => Promise<number>;
   onReset: () => void;
 }) {
   const { phase, files, totalBytes, receivedBytes, speed, peerDevice, quality } = state;
@@ -40,6 +46,25 @@ export function ReceiverPanel({
   const copyText = React.useCallback((text: string) => {
     navigator.clipboard?.writeText(text).catch(() => {});
   }, []);
+
+  // Aggregate-action feedback
+  const [copiedAll, setCopiedAll] = React.useState(false);
+  const [sharedAll, setSharedAll] = React.useState(false);
+  const handleCopyAll = async () => {
+    const n = await onCopyAllText();
+    if (n > 0) {
+      setCopiedAll(true);
+      setTimeout(() => setCopiedAll(false), 1800);
+    }
+  };
+  const handleShareAll = async () => {
+    await onShareAll();
+    setSharedAll(true);
+    setTimeout(() => setSharedAll(false), 1800);
+  };
+
+  const textCount = files.filter((f) => f.text).length;
+  const hasMultiple = files.length > 1;
 
   // Connecting / waiting state — before the data channel opens.
   if (phase === "waiting") {
@@ -182,7 +207,7 @@ export function ReceiverPanel({
       )}
 
       {/* Actions */}
-      <div className="mt-7 flex items-center justify-center gap-3">
+      <div className="mt-7 flex flex-wrap items-center justify-center gap-2.5">
         {phase === "done" && (
           <>
             <button
@@ -193,6 +218,34 @@ export function ReceiverPanel({
               <Download className="h-4 w-4" strokeWidth={2} />
               Save all
             </button>
+            {hasMultiple && (
+              <button
+                type="button"
+                onClick={handleShareAll}
+                className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
+              >
+                {sharedAll ? (
+                  <Check className="h-4 w-4 text-foreground/70" strokeWidth={2} />
+                ) : (
+                  <Share2 className="h-4 w-4" strokeWidth={2} />
+                )}
+                {sharedAll ? "Sent" : "Share all"}
+              </button>
+            )}
+            {textCount > 0 && (
+              <button
+                type="button"
+                onClick={handleCopyAll}
+                className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-medium text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
+              >
+                {copiedAll ? (
+                  <Check className="h-4 w-4 text-foreground/70" strokeWidth={2} />
+                ) : (
+                  <Copy className="h-4 w-4" strokeWidth={2} />
+                )}
+                {copiedAll ? "Copied" : `Copy ${textCount} ${textCount === 1 ? "text" : "texts"}`}
+              </button>
+            )}
             <button
               type="button"
               onClick={onReset}

@@ -19,6 +19,8 @@ export function BeamApp() {
     cancel,
     saveFile,
     shareImage,
+    shareAll,
+    copyAllText,
     copyLink,
     removeFile,
     addMoreFiles,
@@ -65,6 +67,8 @@ export function BeamApp() {
               onSave={saveFile}
               onSaveAll={handleSaveAll}
               onShareImage={shareImage}
+              onShareAll={shareAll}
+              onCopyAllText={copyAllText}
               onReset={() => {
                 // Receiver "start over" → drop the ?r= param and become a sender.
                 if (typeof window !== "undefined") {
