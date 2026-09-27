@@ -752,3 +752,28 @@ E2E VERIFICATION:
 
 Stage Summary:
 - The "Store temporarily" button is fully removed from the UI. The app is pure Path A (direct peer-to-peer) everywhere now — simpler, cleaner, and deploys to any free web service.
+
+---
+Task ID: fix-render-build-error
+Agent: main (user reported Render build failure)
+Task: Fix the Turbopack build error on Render (Edge Runtime + Prisma resolution)
+
+ROOT CAUSE:
+- `src/instrumentation.ts` (the Path B cleanup scheduler) used `node:fs`, `node:path`, `process.cwd()`, and dynamically imported `@/lib/db` (Prisma). Turbopack tries to bundle instrumentation.ts for the Edge Runtime, where these Node.js APIs aren't available → build fails with "Can't resolve '.prisma/client/default'".
+- Since Path B was removed from the UI entirely, ALL the storage code was dead weight: instrumentation.ts, cleanup.ts, storage-crypto.ts, db.ts, and the entire /api/beam/store/ API routes.
+
+FIX:
+- Deleted ALL dead Path B backend code:
+  - src/instrumentation.ts (the build-breaking culprit)
+  - src/lib/cleanup.ts
+  - src/lib/storage-crypto.ts
+  - src/lib/db.ts (no longer imported by anything)
+  - src/app/api/beam/store/ (entire directory: route.ts, meta/, list/, status/, cleanup/)
+- Verified: no remaining imports of @/lib/db, @/lib/cleanup, or @/lib/storage-crypto anywhere in src/.
+- Build now succeeds cleanly: `bun run build` → "✓ Compiled successfully in 8.6s" with no warnings, no errors.
+- Route table is clean: just `/` (static) + `/api` (dynamic).
+- Transfer still works end-to-end (All yours, 100%, zero console errors).
+- Lint: 0 errors, 0 warnings.
+
+Stage Summary:
+- The Render/Vercel build error is fixed. The app is now pure Path A (direct P2P) with zero server-side storage dependencies — no Prisma, no disk, no instrumentation hook. Deploys cleanly to any free web service.
