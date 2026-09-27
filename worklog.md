@@ -797,3 +797,20 @@ Next steps for the user:
 - On Render: either re-deploy manually, or if using the Blueprint, create a new service from the render.yaml.
 - Make sure Render's Start Command is `bun run start` (or `node index.js` if Render doesn't have Bun).
 - Render auto-sets the PORT env var — no manual configuration needed.
+
+---
+Task ID: fix-render-node-compat
+Agent: main (user: "still 502" then "SIGTERM + Your service is live")
+Task: Make the signaling server start command Node-compatible (Render free tier has Node, not Bun)
+
+ROOT CAUSE:
+- The start script was `bun index.ts` but Render's free tier runs Node.js, not Bun. `bun` isn't found → the process crashes → Render kills it → 502.
+- The server is a TypeScript file; Node can't run .ts directly.
+
+FIX:
+- Installed `tsx` as a devDependency (a tiny TypeScript runner that works with plain Node).
+- Changed the start script from `bun index.ts` → `tsx index.ts`. Now Render's Node runtime runs it via `npx tsx index.ts` (Render auto-runs `npm start` / `bun run start` which resolves to `tsx index.ts`).
+- Kept `dev` as `bun --hot index.ts` for local dev (hot reload).
+- Verified locally: `PORT=3999 npx tsx index.ts` starts cleanly, /health responds. Full transfer test passes (All yours, 100%, zero errors).
+
+Result: user reports "Your service is live 🎉" on Render. The SIGTERM was just the first deploy attempt restarting.
