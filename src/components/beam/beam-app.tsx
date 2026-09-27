@@ -39,23 +39,64 @@ export function BeamApp() {
   React.useEffect(() => {
     if (sharedParam !== "1") return;
     if (!("serviceWorker" in navigator)) return;
-    const sw = navigator.serviceWorker.controller;
-    if (!sw) return;
-    // Ask the SW for the shared files.
-    sw.postMessage({ type: "get-shared-files" });
+
+    let retrieved = false;
+
+    const retrieveSharedFiles = (sw: ServiceWorker) => {
+      if (retrieved) return;
+      sw.postMessage({ type: "get-shared-files" });
+    };
+
     const handler = (event: MessageEvent) => {
+      if (retrieved) return;
       if (event.data?.type === "shared-files-data" && event.data.files?.length > 0) {
+        retrieved = true;
         const files = event.data.files.map(
           (f: { name: string; type: string; blob: Blob }) =>
             new File([f.blob], f.name, { type: f.type }),
         );
         beginSending(files);
-        // Clean the URL so a refresh doesn't re-trigger.
         window.history.replaceState({}, "", "/");
       }
     };
+
     navigator.serviceWorker.addEventListener("message", handler);
-    return () => navigator.serviceWorker.removeEventListener("message", handler);
+
+    // Try immediately if the SW is already controlling this page.
+    if (navigator.serviceWorker.controller) {
+      retrieveSharedFiles(navigator.serviceWorker.controller);
+    }
+
+    // If not, wait for the SW to register + claim this client, then retry.
+    // This handles the case where the page loads before the SW is ready.
+    navigator.serviceWorker.ready.then((registration) => {
+      if (registration.active && !retrieved) {
+        retrieveSharedFiles(registration.active);
+      }
+    });
+
+    // Also listen for the 'shared-files-ready' broadcast (the SW sends this
+    // immediately after storing the files, before the redirect even loads).
+    const broadcastHandler = (event: MessageEvent) => {
+      if (event.data?.type === "shared-files-ready" && !retrieved) {
+        const sw = navigator.serviceWorker.controller;
+        if (sw) retrieveSharedFiles(sw);
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", broadcastHandler);
+
+    // Safety retry: if the SW hasn't responded after 2s, try again.
+    const retryTimer = setTimeout(() => {
+      if (!retrieved && navigator.serviceWorker.controller) {
+        retrieveSharedFiles(navigator.serviceWorker.controller);
+      }
+    }, 2000);
+
+    return () => {
+      navigator.serviceWorker.removeEventListener("message", handler);
+      navigator.serviceWorker.removeEventListener("message", broadcastHandler);
+      clearTimeout(retryTimer);
+    };
   }, [sharedParam, beginSending]);
 
   // ---- File Handler: pick up files opened WITH Beam (e.g. "Open with Beam"

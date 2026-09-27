@@ -5,8 +5,8 @@
  * between peers and NEVER pass through this service worker. This SW only:
  *   1. Caches the static app shell (HTML + JS/CSS) for fast/offline loads.
  *   2. Handles Web Share Target POSTs (when a user shares a file TO Beam
- *      from their phone's share sheet) — stores the file in a temporary
- *      cache, redirects to /?shared=1, and the client picks it up.
+ *      from their phone's share sheet) — stores the file, redirects to
+ *      /?shared=1, and the client picks it up via postMessage.
  *
  * Signaling traffic (WebSocket) is explicitly bypassed — never cached.
  */
@@ -21,7 +21,7 @@ self.addEventListener('install', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// Activate: evict old caches, claim all clients.
+// Activate: evict old caches, claim all clients immediately.
 // ---------------------------------------------------------------------------
 self.addEventListener('activate', (event) => {
   event.waitUntil(
@@ -30,6 +30,8 @@ self.addEventListener('activate', (event) => {
       await Promise.all(
         keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
       );
+      // Claim all clients immediately so the SW controls the page
+      // right after install (needed for share target to work).
       await self.clients.claim();
     })(),
   );
@@ -43,10 +45,6 @@ self.addEventListener('fetch', (event) => {
   const url = new URL(request.url);
 
   // ---- Web Share Target: POST to "/" with shared files ----
-  // When a user shares a file to Beam from their phone's share sheet,
-  // Android POSTs multipart/form-data to "/" (the share_target action).
-  // We intercept it, store the files in a temporary cache, and redirect
-  // to /?shared=1 so the client picks them up.
   if (request.method === 'POST' && url.pathname === '/') {
     event.respondWith(handleShareTarget(event));
     return;
@@ -112,38 +110,44 @@ self.addEventListener('fetch', (event) => {
 });
 
 // ---------------------------------------------------------------------------
+// Shared files store — uses a simple global variable in the SW scope.
+// Files are stored as { name, type, blob } and read back by the client
+// via postMessage. Cleared after reading.
+// ---------------------------------------------------------------------------
+let sharedFilesStore = [];
+
+// ---------------------------------------------------------------------------
 // Web Share Target handler — extract shared files, redirect to /?shared=1
 // ---------------------------------------------------------------------------
 async function handleShareTarget(event) {
-  const formData = await event.request.formData();
-  const files = formData.getAll('files');
+  try {
+    const formData = await event.request.formData();
+    const files = formData.getAll('files');
 
-  // Store the shared files in a temporary cache the client can read.
-  // We use the Cache API with a special key "shared-files".
-  const cache = await caches.open('beam-shared');
-  // Store each file as a separate response with a unique URL.
-  const sharedUrls = [];
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const sharedUrl = new URL('/__shared__/' + i, self.location.origin);
-    const response = new Response(file, {
-      headers: {
-        'Content-Type': file.type || 'application/octet-stream',
-        'X-File-Name': file.name || `file-${i + 1}`,
-      },
-    });
-    await cache.put(sharedUrl.toString(), response);
-    sharedUrls.push({ url: sharedUrl.toString(), name: file.name || `file-${i + 1}`, type: file.type });
+    // Store the shared files in the SW's memory (not Cache API — that's
+    // unreliable for File objects on some browsers).
+    sharedFilesStore = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      sharedFilesStore.push({
+        name: file.name || `file-${i + 1}`,
+        type: file.type || 'application/octet-stream',
+        blob: file,
+      });
+    }
+
+    // Notify all open clients that shared files are ready.
+    const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const client of clients) {
+      client.postMessage({ type: 'shared-files-ready' });
+    }
+
+    // Redirect to the app with ?shared=1.
+    return Response.redirect('/?shared=1', 303);
+  } catch (err) {
+    console.error('[sw] share target error:', err);
+    return Response.redirect('/?shared=1', 303);
   }
-
-  // Notify all clients about the shared files.
-  const clients = await self.clients.matchAll({ type: 'window' });
-  for (const client of clients) {
-    client.postMessage({ type: 'shared-files', files: sharedUrls });
-  }
-
-  // Redirect to the app with ?shared=1 so it knows to look for shared files.
-  return Response.redirect('/?shared=1', 303);
 }
 
 // ---------------------------------------------------------------------------
@@ -151,22 +155,13 @@ async function handleShareTarget(event) {
 // ---------------------------------------------------------------------------
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'get-shared-files') {
-    event.waitUntil(
-      (async () => {
-        const cache = await caches.open('beam-shared');
-        const keys = await cache.keys();
-        const files = [];
-        for (const key of keys) {
-          const response = await cache.match(key);
-          const name = response.headers.get('X-File-Name') || 'shared-file';
-          const type = response.headers.get('Content-Type') || 'application/octet-stream';
-          const blob = await response.blob();
-          files.push({ name, type, blob });
-          // Clean up after reading.
-          await cache.delete(key);
-        }
-        event.source.postMessage({ type: 'shared-files-data', files });
-      })(),
-    );
+    // Send the stored files back to the client, then clear them.
+    const files = sharedFilesStore.map((f) => ({
+      name: f.name,
+      type: f.type,
+      blob: f.blob,
+    }));
+    sharedFilesStore = [];
+    event.source.postMessage({ type: 'shared-files-data', files });
   }
 });
