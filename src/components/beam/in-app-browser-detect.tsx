@@ -1,19 +1,18 @@
 "use client";
 
 import * as React from "react";
-import { ExternalLink, AlertCircle } from "lucide-react";
+import { ExternalLink, AlertCircle, Copy, Check } from "lucide-react";
 
 /**
  * InAppBrowserDetect — detects if the user is in a restricted in-app browser
  * (Instagram, Facebook, TikTok, LinkedIn, Snapchat, etc.) that blocks
- * WebSockets and/or WebRTC. Shows a banner prompting them to open in
- * Chrome/Safari, which are required for Beam to work.
+ * WebSockets and/or WebRTC. Shows a clean URL they can copy or type into
+ * their real browser.
  */
 
 function isInAppBrowser(): boolean {
   if (typeof navigator === "undefined") return false;
   const ua = navigator.userAgent || "";
-  // Common in-app browser identifiers
   const inAppPatterns = [
     "Instagram",
     "FBAN",
@@ -33,16 +32,27 @@ function isInAppBrowser(): boolean {
 
 export function InAppBrowserDetect() {
   const [show, setShow] = React.useState(false);
-  const [url, setUrl] = React.useState("");
+  const [copied, setCopied] = React.useState(false);
+
+  // The clean URL to show — just the origin, no query params.
+  // E.g. "mybeam.vercel.app" instead of "mybeam.vercel.app/?r=ABC123&utm_source=ig"
+  const cleanUrl = typeof window !== "undefined" ? window.location.origin.replace(/^https?:\/\//, "") : "";
 
   React.useEffect(() => {
     if (isInAppBrowser()) {
       setShow(true);
-      // Build the "open in browser" URL
-      const currentUrl = window.location.href;
-      setUrl(currentUrl);
     }
   }, []);
+
+  const handleCopy = () => {
+    try {
+      navigator.clipboard?.writeText(window.location.origin);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* ignore */
+    }
+  };
 
   if (!show) return null;
 
@@ -56,32 +66,27 @@ export function InAppBrowserDetect() {
           Open in a real browser
         </h2>
         <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">
-          In-app browsers (like Instagram's) block the peer-to-peer connection
-          Beam needs. Open this link in Chrome or Safari to send files.
+          Instagram's browser blocks file transfers. Open Chrome or Safari and go to:
         </p>
-        <button
-          type="button"
-          onClick={() => {
-            // Try to open in the system's default browser
-            // On iOS, this opens Safari; on Android, this opens the default browser
-            window.open(url, "_system");
-            // Fallback: copy the URL so the user can paste it manually
-            try {
-              navigator.clipboard?.writeText(url);
-            } catch {
-              /* ignore */
-            }
-          }}
-          className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition-all duration-200 active:scale-[0.97] hover:scale-[1.03]"
-        >
-          <ExternalLink className="h-4 w-4" strokeWidth={2.5} />
-          Open in browser
-        </button>
+        <div className="mt-4 flex items-center gap-2 rounded-xl border border-border bg-secondary px-4 py-3">
+          <span className="flex-1 text-left text-[15px] font-bold text-foreground">
+            {cleanUrl}
+          </span>
+          <button
+            type="button"
+            onClick={handleCopy}
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground transition-transform active:scale-[0.97]"
+            aria-label="Copy URL"
+          >
+            {copied ? (
+              <Check className="h-4 w-4" strokeWidth={2.5} />
+            ) : (
+              <Copy className="h-4 w-4" strokeWidth={2} />
+            )}
+          </button>
+        </div>
         <p className="mt-3 text-xs text-muted-foreground">
-          Or copy this link and paste it in Chrome/Safari:
-        </p>
-        <p className="mt-1 break-all rounded-lg bg-secondary px-3 py-2 text-xs text-muted-foreground">
-          {url}
+          {copied ? "Copied! Paste it in Chrome or Safari." : "Tap copy, then paste it in your browser."}
         </p>
       </div>
     </div>
