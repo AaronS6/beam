@@ -51,10 +51,9 @@
 
 :root {
   /* System font — friendly, humanist. */
-  /* Real fonts loaded via next/font in layout.tsx (Inter + Bricolage Grotesque).
-     Fallbacks cover any flash before the webfonts swap in. */
-  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
-  --font-display: var(--font-bricolage), var(--font-inter), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  /* Fonts loaded via <link> in layout.tsx (Google Fonts CDN). */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+  --font-display: "Bricolage Grotesque", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
   /* Generous radius — 24px on the main card, 16px on buttons/chips */
