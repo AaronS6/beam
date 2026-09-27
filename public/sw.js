@@ -44,8 +44,12 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // ---- Web Share Target: POST to "/" with shared files ----
-  if (request.method === 'POST' && url.pathname === '/') {
+  // ---- Web Share Target: POST to "/api/share" with shared files ----
+  // When a user shares a file to Beam from their phone's share sheet,
+  // Android POSTs multipart/form-data to /api/share (the share_target action
+  // in the manifest). We intercept it, store the file, and redirect to
+  // /?shared=1 so the client picks them up.
+  if (request.method === 'POST' && (url.pathname === '/api/share' || url.pathname === '/')) {
     event.respondWith(handleShareTarget(event));
     return;
   }

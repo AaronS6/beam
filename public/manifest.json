@@ -11,7 +11,7 @@
   "categories": ["utilities", "productivity"],
   "lang": "en",
   "share_target": {
-    "action": "/",
+    "action": "/api/share",
     "method": "POST",
     "enctype": "multipart/form-data",
     "params": {
