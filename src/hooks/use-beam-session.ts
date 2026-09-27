@@ -813,14 +813,30 @@ function makeTransfer(
       phase: "done",
       speed: 0,
       transferEndedAt: Date.now(),
-      // Don't force all files to "done" here — the receiver's finalizeFile
-      // already marks each file done individually with a real blob URL.
-      // For the sender, files are already done (they were sent).
-      // Only mark undome files as done if they have a URL (receiver side).
-      files: s.files.map((f) =>
-        f.status !== "done" ? { ...f, status: "done" as const, received: f.size } : f,
-      ),
+      // SENDER: mark all files as done (they were sent — no URL needed).
+      // RECEIVER: do NOT mark files as done here. The receiver's finalizeFile
+      // (async) is still reassembling blobs + creating URLs. If we mark them
+      // done here, they'd be "done" with no URL → stuck at 100% with no
+      // Download button. finalizeFile's onFileComplete is the ONLY place that
+      // should mark each receiver file done (with a real blob URL).
+      files: role === "sender"
+        ? s.files.map((f) => ({ ...f, status: "done" as const, received: f.size }))
+        : s.files,
     }));
+    // RECEIVER SAFETY NET: if any files are still "transferring" after 5s
+    // (finalizeFile should have finished by then), force them to "done" with
+    // whatever URL they have (or none). This prevents a permanent stuck state
+    // if finalizeFile somehow doesn't fire onAllComplete.
+    if (role === "receiver") {
+      setTimeout(() => {
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) =>
+            f.status === "transferring" ? { ...f, status: "done" as const, received: f.size } : f,
+          ),
+        }));
+      }, 5000);
+    }
   };
   t.onCancel = () => patch({ phase: "error", error: "Transfer cancelled by the other device." });
 

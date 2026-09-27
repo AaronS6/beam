@@ -22,6 +22,20 @@
       ]
     }
   },
+  "file_handlers": [
+    {
+      "action": "/",
+      "accept": {
+        "application/pdf": [".pdf"],
+        "image/*": [".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic"],
+        "text/*": [".txt", ".md", ".csv", ".json"],
+        "application/zip": [".zip"],
+        "application/msword": [".doc", ".docx"],
+        "application/vnd.ms-excel": [".xls", ".xlsx"],
+        "*/*": ["*"]
+      }
+    }
+  ],
   "icons": [
     {
       "src": "/icons/icon-192.png",

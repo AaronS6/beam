@@ -58,6 +58,30 @@ export function BeamApp() {
     return () => navigator.serviceWorker.removeEventListener("message", handler);
   }, [sharedParam, beginSending]);
 
+  // ---- File Handler: pick up files opened WITH Beam (e.g. "Open with Beam"
+  // from the file manager, or when a file type is associated with Beam). Uses
+  // the File Handling API (window.launchQueue). ----
+  React.useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!("launchQueue" in window)) return;
+    const launchQueue = (window as any).launchQueue;
+    if (!launchQueue) return;
+    launchQueue.setConsumer(async (launchParams: any) => {
+      const handles = launchParams?.files;
+      if (!handles || handles.length === 0) return;
+      const files: File[] = [];
+      for (const handle of handles) {
+        try {
+          const file = await handle.getFile();
+          files.push(file);
+        } catch {
+          /* skip unreadable */
+        }
+      }
+      if (files.length > 0) beginSending(files);
+    });
+  }, [beginSending]);
+
   const isReceiver = state.mode === "receiver";
 
   const handleSaveAll = React.useCallback(() => {
