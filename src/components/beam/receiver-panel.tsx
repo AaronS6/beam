@@ -64,20 +64,66 @@ export function ReceiverPanel({
   const textCount = files.filter((f) => f.text).length;
   const hasMultiple = files.length > 1;
 
-  // Connecting / waiting state — Path A only (Path B jumps straight to connected).
+  // Connecting / waiting state — Path A only. Shows a timeout after 20s
+  // (the signaling server on Render's free tier sleeps after 15 min idle and
+  // takes ~30s to wake; this gives it time while keeping the user informed).
+  const [connectTime, setConnectTime] = React.useState(0);
+  React.useEffect(() => {
+    if (phase !== "waiting") { setConnectTime(0); return; }
+    const t = setInterval(() => setConnectTime((v) => v + 1), 1000);
+    return () => clearInterval(t);
+  }, [phase]);
+
   if (phase === "waiting") {
+    const showSlow = connectTime > 15;
+    const showTimeout = connectTime > 45;
     return (
       <div className="w-full max-w-[340px]">
-        <BeamStage active>
+        <BeamStage active={!showTimeout}>
           <div className="flex flex-col items-center px-6 py-14">
             <div className="relative flex h-[120px] w-[120px] items-center justify-center">
-              <Loader2 className="h-9 w-9 animate-spin text-muted-foreground" strokeWidth={1.5} />
-              <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
+              {showTimeout ? (
+                <AlertCircle className="h-10 w-10 text-destructive" strokeWidth={1.5} />
+              ) : (
+                <Loader2 className="h-9 w-9 animate-spin text-muted-foreground" strokeWidth={1.5} />
+              )}
+              {!showTimeout && (
+                <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
+              )}
             </div>
-            <p className="font-display mt-6 text-[18px] font-bold text-foreground">Connecting…</p>
-            <p className="mt-1 text-center text-sm text-muted-foreground">
-              Linking up with {peerDevice?.label ?? "the sender"}
-            </p>
+            {showTimeout ? (
+              <>
+                <p className="font-display mt-6 text-[18px] font-bold text-foreground">
+                  Taking a while to connect
+                </p>
+                <p className="mt-1.5 max-w-[28ch] text-center text-sm text-muted-foreground">
+                  The server might be waking up or your network may block P2P connections. Try refreshing, or ask the sender to generate a new QR code.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground transition-transform active:scale-[0.97] hover:scale-[1.03]"
+                >
+                  <RotateCcw className="h-4 w-4" strokeWidth={2.5} /> Retry
+                </button>
+              </>
+            ) : showSlow ? (
+              <>
+                <p className="font-display mt-6 text-[18px] font-bold text-foreground">
+                  Waking up the server…
+                </p>
+                <p className="mt-1 text-center text-sm text-muted-foreground">
+                  This takes a few seconds the first time. Hang tight.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-display mt-6 text-[18px] font-bold text-foreground">Connecting…</p>
+                <p className="mt-1 text-center text-sm text-muted-foreground">
+                  Linking up with {peerDevice?.label ?? "the sender"}
+                </p>
+              </>
+            )}
           </div>
         </BeamStage>
       </div>

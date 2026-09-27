@@ -3,6 +3,7 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/toaster";
 import { ThemeProvider } from "@/components/theme-provider";
 import { SWRegister } from "@/components/beam/sw-register";
+import { InAppBrowserDetect } from "@/components/beam/in-app-browser-detect";
 
 export const metadata: Metadata = {
   title: "Beam — Send files without the cables",
@@ -58,6 +59,7 @@ export default function RootLayout({
           {children}
           <Toaster />
           <SWRegister />
+          <InAppBrowserDetect />
         </ThemeProvider>
       </body>
     </html>
