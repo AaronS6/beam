@@ -177,7 +177,8 @@ export function useBeamSession(sessionIdParam?: string | null) {
     };
     lobby.onInvite = (payload) => {
       // A nearby sender picked THIS device to receive files. Auto-accept:
-      // join their session via the existing Path A receiver flow.
+      // join their session via a SEPARATE SignalingClient (not the lobby socket)
+      // so the session handlers don't collide with lobby presence handlers.
       const sid = payload.sessionId;
       const inviter = payload.device?.name ?? "a device";
       setState((s) => ({
@@ -198,26 +199,28 @@ export function useBeamSession(sessionIdParam?: string | null) {
         receivedBytes: 0,
         error: null,
       }));
-      // Use the SAME lobby client to join the session (reuse the socket).
-      lobby.joinSession(sid, deviceInfo());
-      lobby.onSessionJoined = ({ sender }) => {
+      // Use a SEPARATE SignalingClient for the session (not the lobby socket).
+      const sessionSignaling = new SignalingClient();
+      signalingRef.current = sessionSignaling;
+      sessionSignaling.onConnect = () => sessionSignaling.joinSession(sid, deviceInfo());
+      sessionSignaling.onSessionJoined = ({ sender }) => {
         patch({ phase: "waiting", peerDevice: sender?.name ? { label: sender.name, short: sender.platform ?? "" } : null });
       };
-      lobby.onSignal = (sigdata) => {
+      sessionSignaling.onSignal = (sigdata) => {
         let transfer = transferRef.current;
         if (!transfer) {
-          transfer = makeTransfer("receiver", sid, lobby, patch, setState, reconnectPrevPhase);
+          transfer = makeTransfer("receiver", sid, sessionSignaling, patch, setState, reconnectPrevPhase);
           transferRef.current = transfer;
         }
         void transfer.handleSignal(sigdata);
       };
-      lobby.onPeerLeft = () => {
+      sessionSignaling.onPeerLeft = () => {
         setState((s) =>
           s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
         );
       };
-      lobby.onSessionExpired = () => patch({ phase: "expired" });
-      lobby.onError = (msg) => patch({ error: msg });
+      sessionSignaling.onSessionExpired = () => patch({ phase: "expired" });
+      sessionSignaling.onError = (msg) => patch({ error: msg });
     };
     return () => {
       lobby.leaveLobby();
@@ -389,8 +392,8 @@ export function useBeamSession(sessionIdParam?: string | null) {
 
   /** Sender: pick a nearby device (by socketId) to send the selected files to.
    *  Creates a session + sends an invite; when the invitee joins, the WebRTC
-   *  offer flow runs just like the QR path. The files must already be selected
-   *  (in rawFilesRef) before calling this. */
+   *  offer flow runs just like the QR path. Uses a SEPARATE SignalingClient
+   *  for the session (not the lobby socket) so handlers don't collide. */
   const sendToNearby = useCallback(
     (socketId: string, deviceLabel?: string) => {
       const files = rawFilesRef.current;
@@ -434,32 +437,42 @@ export function useBeamSession(sessionIdParam?: string | null) {
         createdAt: now,
         peerDevice: deviceLabel ? { label: deviceLabel, short: "" } : null,
       });
-      // Wire the lobby client as the session signaling transport.
+
       transferRef.current?.close();
       transferRef.current = null;
-      lobby.onSessionCreated = () => {
-        // Now invite the target device — they'll join-session on receipt.
+
+      // Use a SEPARATE SignalingClient for the session (NOT the lobby socket).
+      // This prevents handler collisions between lobby presence + session signaling.
+      const signaling = new SignalingClient();
+      signalingRef.current = signaling;
+      speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
+
+      signaling.onConnect = () => {
+        signaling.createSession(sessionId, deviceInfo());
+      };
+      signaling.onSessionCreated = () => {
+        // Session is created — now invite the target device via the LOBBY socket.
+        // The invitee's lobby onInvite handler will make them join this session.
         lobby.invite(socketId, sessionId, deviceInfo(), items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })));
       };
-      lobby.onPeerJoined = ({ receiver }) => {
+      signaling.onPeerJoined = ({ receiver }) => {
         patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
-        const transfer = makeTransfer("sender", sessionId, lobby, patch, setState, reconnectPrevPhase);
+        const transfer = makeTransfer("sender", sessionId, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
         transferRef.current = transfer;
         void transfer.createOffer();
       };
-      lobby.onSignal = (data) => transferRef.current?.handleSignal(data);
-      lobby.onPeerLeft = () => {
+      signaling.onSignal = (data) => transferRef.current?.handleSignal(data);
+      signaling.onPeerLeft = () => {
         setState((s) =>
           s.phase === "done"
             ? s
             : { ...s, phase: "error", error: "The other device disconnected before the transfer finished." },
         );
       };
-      lobby.onSessionExpired = () => patch({ phase: "expired" });
-      lobby.onError = (msg) => patch({ error: msg });
-      // Create the session via the lobby socket.
-      lobby.createSession(sessionId, deviceInfo());
+      signaling.onSessionExpired = () => patch({ phase: "expired" });
+      signaling.onError = (msg) => patch({ error: msg });
+      void getIceServers;
     },
     [patch],
   );
