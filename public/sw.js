@@ -4,14 +4,15 @@
  * IMPORTANT: File transfer bytes flow over WebRTC DataChannels directly
  * between peers and NEVER pass through this service worker. This SW only:
  *   1. Caches the static app shell (HTML + JS/CSS) for fast/offline loads.
- *   2. Handles Web Share Target POSTs (when a user shares a file TO Beam
- *      from their phone's share sheet) — stores the file, redirects to
- *      /?shared=1, and the client picks it up via postMessage.
+ *   2. Handles Web Share Target POSTs — stores files in the Cache API
+ *      (which persists across SW restarts), redirects to /?shared=1.
+ *      The client reads the files from the Cache API via postMessage.
  *
  * Signaling traffic (WebSocket) is explicitly bypassed — never cached.
  */
 
-const CACHE = 'beam-shell-v2';
+const CACHE = 'beam-shell-v3';
+const SHARED_CACHE = 'beam-shared-files';
 
 // ---------------------------------------------------------------------------
 // Install: take control immediately.
@@ -28,10 +29,8 @@ self.addEventListener('activate', (event) => {
     (async () => {
       const keys = await caches.keys();
       await Promise.all(
-        keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
+        keys.filter((k) => k !== CACHE && k !== SHARED_CACHE).map((k) => caches.delete(k)),
       );
-      // Claim all clients immediately so the SW controls the page
-      // right after install (needed for share target to work).
       await self.clients.claim();
     })(),
   );
@@ -44,28 +43,22 @@ self.addEventListener('fetch', (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // ---- Web Share Target: POST to "/api/share" with shared files ----
-  // When a user shares a file to Beam from their phone's share sheet,
-  // Android POSTs multipart/form-data to /api/share (the share_target action
-  // in the manifest). We intercept it, store the file, and redirect to
-  // /?shared=1 so the client picks them up.
+  // ---- Web Share Target: POST to "/api/share" or "/" with shared files ----
   if (request.method === 'POST' && (url.pathname === '/api/share' || url.pathname === '/')) {
     event.respondWith(handleShareTarget(event));
     return;
   }
 
   // Never touch websocket upgrades — signaling channel must stay live & fresh.
-  // Also bail on anything that isn't a GET.
-  if (request.mode === 'websocket' || request.method !== 'GET') {
-    return;
-  }
+  if (request.mode === 'websocket') return;
 
-  // Cross-origin requests (Google STUN/TURN, fonts) — let the browser handle.
-  if (url.origin !== self.location.origin) {
-    return;
-  }
+  // Bail on non-GET requests.
+  if (request.method !== 'GET') return;
 
-  // Navigation requests — network first, fall back to cache, fall back to shell.
+  // Cross-origin requests — let the browser handle.
+  if (url.origin !== self.location.origin) return;
+
+  // Navigation requests — network first, fall back to cache.
   if (request.mode === 'navigate') {
     event.respondWith(
       (async () => {
@@ -114,39 +107,63 @@ self.addEventListener('fetch', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// Shared files store — uses a simple global variable in the SW scope.
-// Files are stored as { name, type, blob } and read back by the client
-// via postMessage. Cleared after reading.
-// ---------------------------------------------------------------------------
-let sharedFilesStore = [];
-
-// ---------------------------------------------------------------------------
-// Web Share Target handler — extract shared files, redirect to /?shared=1
+// Web Share Target handler — extract shared files, store in Cache API
+// (persists across SW restarts), redirect to /?shared=1.
 // ---------------------------------------------------------------------------
 async function handleShareTarget(event) {
   try {
     const formData = await event.request.formData();
     const files = formData.getAll('files');
+    const title = formData.get('title');
+    const text = formData.get('text');
 
-    // Store the shared files in the SW's memory (not Cache API — that's
-    // unreliable for File objects on some browsers).
-    sharedFilesStore = [];
+    const cache = await caches.open(SHARED_CACHE);
+
+    // Clear any previously shared files
+    const oldKeys = await cache.keys();
+    await Promise.all(oldKeys.map((k) => cache.delete(k)));
+
+    let storedCount = 0;
+
+    // Store each shared file as a Response in the Cache API
     for (let i = 0; i < files.length; i++) {
       const file = files[i];
-      sharedFilesStore.push({
-        name: file.name || `file-${i + 1}`,
-        type: file.type || 'application/octet-stream',
-        blob: file,
-      });
+      if (file instanceof Blob) {
+        const sharedUrl = new URL('/__shared__/' + i, self.location.origin).toString();
+        const response = new Response(file, {
+          headers: {
+            'Content-Type': file.type || 'application/octet-stream',
+            'X-File-Name': encodeURIComponent(file.name || `file-${i + 1}`),
+          },
+        });
+        await cache.put(sharedUrl, response);
+        storedCount++;
+      }
     }
 
-    // Notify all open clients that shared files are ready.
+    // If no files but there's text, create a text file
+    if (storedCount === 0 && (text || title)) {
+      const content = [title ? String(title) : '', text ? String(text) : ''].filter(Boolean).join('\n\n');
+      if (content) {
+        const sharedUrl = new URL('/__shared__/0', self.location.origin).toString();
+        const response = new Response(content, {
+          headers: {
+            'Content-Type': 'text/plain',
+            'X-File-Name': 'shared-text.txt',
+          },
+        });
+        await cache.put(sharedUrl, response);
+        storedCount = 1;
+      }
+    }
+
+    // Notify all open clients that shared files are ready
     const clients = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
     for (const client of clients) {
-      client.postMessage({ type: 'shared-files-ready' });
+      client.postMessage({ type: 'shared-files-ready', count: storedCount });
     }
 
-    // Redirect to the app with ?shared=1.
+    // Redirect to the app
     return Response.redirect('/?shared=1', 303);
   } catch (err) {
     console.error('[sw] share target error:', err);
@@ -156,16 +173,28 @@ async function handleShareTarget(event) {
 
 // ---------------------------------------------------------------------------
 // Message handler: client asks for shared files.
+// Reads from the Cache API (persistent across SW restarts).
 // ---------------------------------------------------------------------------
 self.addEventListener('message', (event) => {
   if (event.data && event.data.type === 'get-shared-files') {
-    // Send the stored files back to the client, then clear them.
-    const files = sharedFilesStore.map((f) => ({
-      name: f.name,
-      type: f.type,
-      blob: f.blob,
-    }));
-    sharedFilesStore = [];
-    event.source.postMessage({ type: 'shared-files-data', files });
+    event.waitUntil(
+      (async () => {
+        const cache = await caches.open(SHARED_CACHE);
+        const keys = await cache.keys();
+        const files = [];
+        for (const key of keys) {
+          const response = await cache.match(key);
+          if (!response) continue;
+          const name = decodeURIComponent(response.headers.get('X-File-Name') || 'shared-file');
+          const type = response.headers.get('Content-Type') || 'application/octet-stream';
+          const blob = await response.blob();
+          files.push({ name, type, blob });
+        }
+        // Clear the shared cache after reading
+        await Promise.all(keys.map((k) => cache.delete(k)));
+
+        event.source.postMessage({ type: 'shared-files-data', files });
+      })(),
+    );
   }
 });

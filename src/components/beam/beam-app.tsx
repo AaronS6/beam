@@ -34,21 +34,25 @@ export function BeamApp() {
 
   // ---- Web Share Target: pick up files shared TO Beam from the phone's
   // share sheet. When a user shares a file to Beam, the service worker
-  // stores it + redirects to /?shared=1. We ask the SW for the files and
-  // auto-load them into the sender flow. ----
+  // stores it in the Cache API + redirects to /?shared=1. We ask the SW
+  // for the files and auto-load them into the sender flow. ----
   React.useEffect(() => {
     if (sharedParam !== "1") return;
     if (!("serviceWorker" in navigator)) return;
 
     let retrieved = false;
+    let attemptCount = 0;
 
-    const retrieveSharedFiles = (sw: ServiceWorker) => {
-      if (retrieved) return;
+    const retrieveSharedFiles = (sw: ServiceWorker | null) => {
+      if (retrieved || !sw) return;
+      attemptCount++;
       sw.postMessage({ type: "get-shared-files" });
     };
 
-    const handler = (event: MessageEvent) => {
+    const handleMessage = (event: MessageEvent) => {
       if (retrieved) return;
+
+      // Shared files data arrived
       if (event.data?.type === "shared-files-data" && event.data.files?.length > 0) {
         retrieved = true;
         const files = event.data.files.map(
@@ -57,45 +61,47 @@ export function BeamApp() {
         );
         beginSending(files);
         window.history.replaceState({}, "", "/");
+        return;
       }
-    };
 
-    navigator.serviceWorker.addEventListener("message", handler);
-
-    // Try immediately if the SW is already controlling this page.
-    if (navigator.serviceWorker.controller) {
-      retrieveSharedFiles(navigator.serviceWorker.controller);
-    }
-
-    // If not, wait for the SW to register + claim this client, then retry.
-    // This handles the case where the page loads before the SW is ready.
-    navigator.serviceWorker.ready.then((registration) => {
-      if (registration.active && !retrieved) {
-        retrieveSharedFiles(registration.active);
-      }
-    });
-
-    // Also listen for the 'shared-files-ready' broadcast (the SW sends this
-    // immediately after storing the files, before the redirect even loads).
-    const broadcastHandler = (event: MessageEvent) => {
+      // Shared files are ready (broadcast from SW after storing)
       if (event.data?.type === "shared-files-ready" && !retrieved) {
         const sw = navigator.serviceWorker.controller;
         if (sw) retrieveSharedFiles(sw);
       }
     };
-    navigator.serviceWorker.addEventListener("message", broadcastHandler);
 
-    // Safety retry: if the SW hasn't responded after 2s, try again.
-    const retryTimer = setTimeout(() => {
-      if (!retrieved && navigator.serviceWorker.controller) {
-        retrieveSharedFiles(navigator.serviceWorker.controller);
+    navigator.serviceWorker.addEventListener("message", handleMessage);
+
+    // Attempt 1: immediately if SW is controlling this page
+    if (navigator.serviceWorker.controller) {
+      retrieveSharedFiles(navigator.serviceWorker.controller);
+    }
+
+    // Attempt 2: wait for SW to be ready
+    navigator.serviceWorker.ready.then((registration) => {
+      if (!retrieved && registration.active) {
+        retrieveSharedFiles(registration.active);
       }
-    }, 2000);
+    });
+
+    // Attempt 3: retry after 1s (SW might have just claimed the page)
+    setTimeout(() => {
+      if (!retrieved) retrieveSharedFiles(navigator.serviceWorker.controller);
+    }, 1000);
+
+    // Attempt 4: retry after 3s (last chance — SW was slow to start)
+    setTimeout(() => {
+      if (!retrieved) retrieveSharedFiles(navigator.serviceWorker.controller);
+    }, 3000);
+
+    // Attempt 5: retry after 5s (absolute last — Render server waking up)
+    setTimeout(() => {
+      if (!retrieved) retrieveSharedFiles(navigator.serviceWorker.controller);
+    }, 5000);
 
     return () => {
-      navigator.serviceWorker.removeEventListener("message", handler);
-      navigator.serviceWorker.removeEventListener("message", broadcastHandler);
-      clearTimeout(retryTimer);
+      navigator.serviceWorker.removeEventListener("message", handleMessage);
     };
   }, [sharedParam, beginSending]);
 

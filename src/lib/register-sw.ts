@@ -40,8 +40,8 @@ export async function registerSW(): Promise<RegisterSWResult> {
     return { registration: null, error: null };
   }
 
-  // Only register in production builds. During `next dev` the SW would cache
-  // stale chunks and fight HMR, so we skip it entirely.
+  // Register in production. In dev, skip (fights HMR).
+  // On Vercel, NODE_ENV is 'production' so this works.
   if (process.env.NODE_ENV !== 'production') {
     return { registration: null, error: null };
   }
