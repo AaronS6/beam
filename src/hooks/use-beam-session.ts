@@ -56,13 +56,10 @@ export type SessionState = {
   transferEndedAt: number | null;
   peakSpeed: number;
   candidateType: "host" | "srflx" | "prflx" | "relay" | "unknown" | null;
-  storeMode: boolean; // Path B toggle
   /** Whether Path B (server storage) is available on this host. False on
    *  serverless hosts (Vercel) with no persistent disk → "Store temporarily"
    *  toggle is hidden. */
-  storeAvailable: boolean;
   /** Path B: epoch ms when stored files expire (createdAt + 5 min). Null on Path A. */
-  storeExpiresAt: number | null;
   /** Nearby devices seen via the lobby (presence). Sender can tap one to send. */
   nearby: { socketId: string; label: string; short: string }[];
 };
@@ -84,9 +81,6 @@ const INITIAL: SessionState = {
   transferEndedAt: null,
   peakSpeed: 0,
   candidateType: null,
-  storeMode: false,
-  storeAvailable: true, // optimistic default; corrected on mount by the status probe
-  storeExpiresAt: null,
   nearby: [],
 };
 
@@ -105,7 +99,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const transferRef = useRef<BeamTransfer | null>(null);
   const rawFilesRef = useRef<File[]>([]);
   const sessionIdRef = useRef<string | null>(mode === "receiver" ? sessionIdParam ?? null : null);
-  const storeModeRef = useRef<boolean>(false);
   const speedRef = useRef({ lastTs: 0, lastBytes: 0, ema: 0 });
   const reconnectPrevPhase = useRef<Phase | null>(null);
   // Stashed nearby target: when the user taps a nearby device before picking
@@ -119,35 +112,9 @@ export function useBeamSession(sessionIdParam?: string | null) {
 
   useEffect(() => {
     sessionIdRef.current = state.sessionId;
-    storeModeRef.current = state.storeMode;
-  }, [state.sessionId, state.storeMode]);
+  }, [state.sessionId]);
 
-  const setStoreMode = useCallback((v: boolean) => {
-    patch({ storeMode: v });
-  }, [patch]);
 
-  // ---- Probe whether Path B (server storage) is available on this host ----
-  // On serverless hosts (Vercel) with no persistent disk, this returns false
-  // → the "Store temporarily" toggle is hidden, and the app defaults to Path A.
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/beam/store/status")
-      .then((r) => (r.ok ? r.json() : { available: false }))
-      .then((data) => {
-        if (cancelled) return;
-        if (data && data.available === false) {
-          patch({ storeAvailable: false, storeMode: false });
-        } else {
-          patch({ storeAvailable: true });
-        }
-      })
-      .catch(() => {
-        if (!cancelled) patch({ storeAvailable: false });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [patch]);
 
   // ---- Lobby / nearby-device presence ----
   // Every device (sender OR receiver) joins the lobby so others can discover
@@ -156,22 +123,43 @@ export function useBeamSession(sessionIdParam?: string | null) {
   useEffect(() => {
     const lobby = new SignalingClient();
     lobbyRef.current = lobby;
-    lobby.onConnect = () => lobby.joinLobby(deviceInfo());
+    const myDevice = deviceInfo();
+    lobby.onConnect = () => lobby.joinLobby(myDevice);
+    // Re-join on reconnect (socket.io auto-reconnects; re-announce presence)
+    lobby.onDisconnect = () => {
+      // Clear the nearby list on disconnect — will repopulate on reconnect
+      setState((s) => ({ ...s, nearby: [] }));
+    };
     lobby.onLobbyList = (devices) => {
-      setState((s) => ({
-        ...s,
-        nearby: devices.map((d) => ({
-          socketId: d.socketId,
-          label: d.device.name ?? "a device",
-          short: d.device.platform ?? "",
-        })),
+      // Fully REPLACE the nearby list (authoritative snapshot from server)
+      const seen = new Set<string>();
+      const deduped = devices.filter((d) => {
+        if (seen.has(d.socketId)) return false;
+        seen.add(d.socketId);
+        return true;
+      }).map((d) => ({
+        socketId: d.socketId,
+        label: d.device.name ?? "a device",
+        short: d.device.platform ?? "",
       }));
+      setState((s) => ({ ...s, nearby: deduped }));
     };
     lobby.onLobbyUpdate = (evt) => {
       setState((s) => {
         if (evt.kind === "join") {
-          // Avoid duplicates.
-          if (s.nearby.some((n) => n.socketId === evt.socketId)) return s;
+          // Deduplicate: if this socketId is already in the list, update its
+          // info rather than adding a duplicate.
+          const exists = s.nearby.some((n) => n.socketId === evt.socketId);
+          if (exists) {
+            return {
+              ...s,
+              nearby: s.nearby.map((n) =>
+                n.socketId === evt.socketId
+                  ? { ...n, label: evt.device?.name ?? n.label, short: evt.device?.platform ?? n.short }
+                  : n,
+              ),
+            };
+          }
           return {
             ...s,
             nearby: [
@@ -278,92 +266,44 @@ export function useBeamSession(sessionIdParam?: string | null) {
     return () => clearInterval(t);
   }, [mode, state.phase, state.createdAt, state.sessionId, patch]);
 
-  // ---- Receiver: auto-join (Path A) OR fetch stored files (Path B) on mount ----
+  // ---- Receiver: auto-join the signaling session on mount ----
   useEffect(() => {
     if (mode !== "receiver" || !sessionIdParam) return;
 
     let cancelled = false;
-
-    // First, probe Path B: does this session have stored files?
-    fetch(`/api/beam/store/list?sessionId=${encodeURIComponent(sessionIdParam)}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then(async (data) => {
-        if (cancelled) return;
-        if (data && data.ok && Array.isArray(data.files) && data.files.length > 0) {
-          // ---- PATH B (receiver) ----
-          patch({
-            phase: "connected",
-            peerDevice: { label: "Stored transfer", short: "stored" },
-            storeMode: true,
-            files: data.files.map((f: any) => ({
-              id: f.id,
-              name: f.name,
-              size: f.size,
-              mime: f.mime,
-              received: 0,
-              status: "queued" as const,
-            })),
-            totalBytes: data.files.reduce((a: number, b: any) => a + (b.size as number), 0),
-            storeExpiresAt: new Date(data.expiresAt).getTime(),
-          });
-        } else {
-          // ---- PATH A (receiver) — join the signaling session ----
-          const signaling = new SignalingClient();
-          signalingRef.current = signaling;
-          signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
-          signaling.onSessionJoined = ({ sender }) => {
-            patch({
-              phase: "waiting",
-              peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
-            });
-          };
-          signaling.onError = (msg) => {
-            if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
-            else patch({ error: msg });
-          };
-          signaling.onSessionExpired = () => patch({ phase: "expired" });
-          signaling.onPeerLeft = () => {
-            setState((s) =>
-              s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
-            );
-          };
-          signaling.onSignal = (sigdata) => {
-            let transfer = transferRef.current;
-            if (!transfer) {
-              transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
-              transferRef.current = transfer;
-            }
-            void transfer.handleSignal(sigdata);
-          };
-        }
-      })
-      .catch(() => {
-        // Network error probing — fall back to Path A.
-        if (cancelled) return;
-        const signaling = new SignalingClient();
-        signalingRef.current = signaling;
-        signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
-        signaling.onSessionJoined = ({ sender }) =>
-          patch({ phase: "waiting", peerDevice: sender?.name ? labelToDescriptor(sender.name) : null });
-        signaling.onError = (msg) => {
-          if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
-        };
-        signaling.onSessionExpired = () => patch({ phase: "expired" });
-        signaling.onSignal = (sigdata) => {
-          let transfer = transferRef.current;
-          if (!transfer) {
-            transfer = makeTransfer("receiver", sessionIdParam, signaling!, patch, setState, reconnectPrevPhase);
-            transferRef.current = transfer;
-          }
-          void transfer.handleSignal(sigdata);
-        };
+    const signaling = new SignalingClient();
+    signalingRef.current = signaling;
+    signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
+    signaling.onSessionJoined = ({ sender }) => {
+      patch({
+        phase: "waiting",
+        peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
       });
+    };
+    signaling.onError = (msg) => {
+      if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
+      else patch({ error: msg });
+    };
+    signaling.onSessionExpired = () => patch({ phase: "expired" });
+    signaling.onPeerLeft = () => {
+      setState((s) =>
+        s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
+      );
+    };
+    signaling.onSignal = (sigdata) => {
+      let transfer = transferRef.current;
+      if (!transfer) {
+        transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
+        transferRef.current = transfer;
+      }
+      void transfer.handleSignal(sigdata);
+    };
 
     return () => {
       cancelled = true;
       transferRef.current?.releaseAll();
       transferRef.current?.close();
-      signalingRef.current?.disconnect();
+      signaling.disconnect();
       transferRef.current = null;
       signalingRef.current = null;
     };
@@ -412,24 +352,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
         phase: "waiting",
         error: null,
         createdAt: now,
-        storeExpiresAt: storeModeRef.current ? now + SESSION_TTL_MS : null,
       });
 
       transferRef.current?.close();
       transferRef.current = null;
-
-      // ---- PATH B: upload to server storage instead of WebRTC ----
-      if (storeModeRef.current) {
-        void uploadPathB(sessionId, files, items, patch, setState).then((ok) => {
-          if (!ok) {
-            patch({ phase: "error", error: "Upload failed. Try peer-to-peer mode instead." });
-          } else {
-            // Stay in "waiting" — the QR now points to the stored files.
-            // No signaling/WebRTC needed; the receiver fetches on scan.
-          }
-        });
-        return;
-      }
 
       // ---- PATH A: peer-to-peer via signaling + WebRTC ----
       const signaling = new SignalingClient();
@@ -507,7 +433,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
         error: null,
         createdAt: now,
         peerDevice: deviceLabel ? { label: deviceLabel, short: "" } : null,
-        storeExpiresAt: null,
       });
       // Wire the lobby client as the session signaling transport.
       transferRef.current?.close();
@@ -539,60 +464,9 @@ export function useBeamSession(sessionIdParam?: string | null) {
     [patch],
   );
   // Keep the ref current so beginSending can call it without a forward-ref issue.
-  sendToNearbyRef.current = sendToNearby;
+  // Must run in an effect (not during render) per React's ref rules.
+  useEffect(() => { sendToNearbyRef.current = sendToNearby; }, [sendToNearby]);
 
-  // ---- Path B receiver: download a single stored file (one-time-use) ----
-  const downloadStored = useCallback(async (fileId: string) => {
-    // Mark transferring, fetch the bytes (this consumes the link server-side).
-    setState((s) => ({
-      ...s,
-      files: s.files.map((f) => (f.id === fileId ? { ...f, status: "transferring" } : f)),
-    }));
-    const meta = state.files.find((f) => f.id === fileId);
-    try {
-      const res = await fetch(`/api/beam/store?id=${encodeURIComponent(fileId)}`);
-      if (!res.ok) {
-        const j = await res.json().catch(() => ({ error: "Download failed" }));
-        setState((s) => ({
-          ...s,
-          files: s.files.map((f) => (f.id === fileId ? { ...f, status: "error" } : f)),
-          error: j.error ?? "Download failed",
-        }));
-        return;
-      }
-      const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      setState((s) => ({
-        ...s,
-        files: s.files.map((f) =>
-          f.id === fileId
-            ? {
-                ...f,
-                status: "done",
-                received: f.size,
-                url,
-                text: isTextLike(f.name, f.mime) && f.size <= 256 * 1024 ? undefined : f.text,
-                imageUrl: isImageLike(f.name, f.mime) ? url : f.imageUrl,
-              }
-            : f,
-        ),
-      }));
-      // If it's a small text file, read it for preview.
-      if (meta && isTextLike(meta.name, meta.mime) && meta.size > 0 && meta.size <= 256 * 1024) {
-        const text = await blob.text();
-        setState((s) => ({
-          ...s,
-          files: s.files.map((f) => (f.id === fileId ? { ...f, text } : f)),
-        }));
-      }
-    } catch (e) {
-      setState((s) => ({
-        ...s,
-        files: s.files.map((f) => (f.id === fileId ? { ...f, status: "error" } : f)),
-        error: String(e),
-      }));
-    }
-  }, [state.files]);
 
   // ---- Queue management (Path A sender, while waiting) ----
   const removeFile = useCallback((id: string) => {
@@ -618,7 +492,6 @@ export function useBeamSession(sessionIdParam?: string | null) {
     if (more.length === 0) return;
     setState((s) => {
       if (s.phase !== "waiting" && s.phase !== "connected") return s;
-      if (s.storeMode) return s; // Path B: no mid-flight queue changes after upload
       const extra: FileItem[] = more.map((f, i) => ({
         id: `${Date.now()}-${s.files.length + i}`,
         name: f.name || `file-${s.files.length + i + 1}`,
@@ -791,12 +664,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
       addMoreFiles,
       reorderFiles,
       sendPastedText,
-      setStoreMode,
-      downloadStored,
     }),
     [
-      state, beginSending, sendToNearby, reset, cancel, saveFile, shareImage, shareAll, copyAllText,
-      copyLink, removeFile, addMoreFiles, reorderFiles, sendPastedText, setStoreMode, downloadStored,
+      state, beginSending, sendToNearby, reset, cancel, saveFile, shareImage, shareAll,
+      copyAllText, copyLink, removeFile, addMoreFiles, reorderFiles, sendPastedText,
     ],
   );
 }
@@ -929,8 +800,13 @@ function makeTransfer(
       phase: "done",
       speed: 0,
       transferEndedAt: Date.now(),
-      receivedBytes: s.totalBytes,
-      files: s.files.map((f) => ({ ...f, status: "done" as const, received: f.size })),
+      // Don't force all files to "done" here — the receiver's finalizeFile
+      // already marks each file done individually with a real blob URL.
+      // For the sender, files are already done (they were sent).
+      // Only mark undome files as done if they have a URL (receiver side).
+      files: s.files.map((f) =>
+        f.status !== "done" ? { ...f, status: "done" as const, received: f.size } : f,
+      ),
     }));
   };
   t.onCancel = () => patch({ phase: "error", error: "Transfer cancelled by the other device." });
@@ -938,48 +814,6 @@ function makeTransfer(
   return t;
 }
 
-// ---- Path B: upload all files to encrypted server storage ----
-async function uploadPathB(
-  sessionId: string,
-  files: File[],
-  items: FileItem[],
-  patch: (p: Partial<SessionState>) => void,
-  setState: React.Dispatch<React.SetStateAction<SessionState>>,
-): Promise<boolean> {
-  let uploaded = 0;
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i];
-    const meta = items[i];
-    setState((s) => ({
-      ...s,
-      files: s.files.map((f) => (f.id === meta.id ? { ...f, status: "transferring" } : f)),
-    }));
-    try {
-      const fd = new FormData();
-      fd.append("sessionId", sessionId);
-      fd.append("name", file.name);
-      fd.append("mime", file.type || "application/octet-stream");
-      fd.append("file", file, file.name);
-      const res = await fetch("/api/beam/store", { method: "POST", body: fd });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error ?? "upload failed");
-      uploaded++;
-      setState((s) => ({
-        ...s,
-        files: s.files.map((f) =>
-          f.id === meta.id ? { ...f, status: "done", received: f.size, id: data.fileId ?? f.id } : f,
-        ),
-        receivedBytes: s.receivedBytes + file.size,
-      }));
-    } catch {
-      return false;
-    }
-  }
-  // Mark waiting state — QR now points to stored files.
-  patch({ phase: "waiting", error: null });
-  void uploaded;
-  return true;
-}
 
 // ---- helpers ----
 function isTextLike(name: string, mime?: string): boolean {

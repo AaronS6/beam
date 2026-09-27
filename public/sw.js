@@ -1,28 +1,27 @@
 /*
- * Beam service worker — app-shell caching only.
+ * Beam service worker — app-shell caching + Web Share Target handler.
  *
  * IMPORTANT: File transfer bytes flow over WebRTC DataChannels directly
- * between peers and NEVER pass through this service worker. This SW only
- * caches the static app shell (HTML navigations + same-origin static assets
- * like JS/CSS/fonts/images) so the app loads fast and survives offline.
+ * between peers and NEVER pass through this service worker. This SW only:
+ *   1. Caches the static app shell (HTML + JS/CSS) for fast/offline loads.
+ *   2. Handles Web Share Target POSTs (when a user shares a file TO Beam
+ *      from their phone's share sheet) — stores the file in a temporary
+ *      cache, redirects to /?shared=1, and the client picks it up.
  *
- * Signaling traffic (WebSocket upgrade to the Socket.IO server on :3003) is
- * explicitly bypassed below — never cached, never intercepted.
+ * Signaling traffic (WebSocket) is explicitly bypassed — never cached.
  */
 
-const CACHE = 'beam-shell-v1';
+const CACHE = 'beam-shell-v2';
 
 // ---------------------------------------------------------------------------
-// Install: take control immediately. Next.js routes are dynamic and chunked,
-// so we don't precache a fixed asset list here — assets get populated lazily
-// by the fetch handler as users navigate.
+// Install: take control immediately.
 // ---------------------------------------------------------------------------
 self.addEventListener('install', (event) => {
   event.waitUntil(self.skipWaiting());
 });
 
 // ---------------------------------------------------------------------------
-// Activate: evict any old cache versions and start serving all clients ASAP.
+// Activate: evict old caches, claim all clients.
 // ---------------------------------------------------------------------------
 self.addEventListener('activate', (event) => {
   event.waitUntil(
@@ -37,33 +36,39 @@ self.addEventListener('activate', (event) => {
 });
 
 // ---------------------------------------------------------------------------
-// Fetch: route by request type.
+// Fetch handler: route by request type.
 // ---------------------------------------------------------------------------
 self.addEventListener('fetch', (event) => {
   const { request } = event;
+  const url = new URL(request.url);
+
+  // ---- Web Share Target: POST to "/" with shared files ----
+  // When a user shares a file to Beam from their phone's share sheet,
+  // Android POSTs multipart/form-data to "/" (the share_target action).
+  // We intercept it, store the files in a temporary cache, and redirect
+  // to /?shared=1 so the client picks them up.
+  if (request.method === 'POST' && url.pathname === '/') {
+    event.respondWith(handleShareTarget(event));
+    return;
+  }
 
   // Never touch websocket upgrades — signaling channel must stay live & fresh.
-  // Also bail on anything that isn't a GET (POST/PUT/DELETE, etc.).
+  // Also bail on anything that isn't a GET.
   if (request.mode === 'websocket' || request.method !== 'GET') {
     return;
   }
 
-  const url = new URL(request.url);
-
-  // Cross-origin requests (e.g. Google STUN/TURN, external fonts) — let the
-  // browser handle them normally. We don't cache opaque responses blindly.
+  // Cross-origin requests (Google STUN/TURN, fonts) — let the browser handle.
   if (url.origin !== self.location.origin) {
     return;
   }
 
-  // Navigation requests (page loads) — network first, fall back to cache,
-  // fall back to the cached root shell for true offline support.
+  // Navigation requests — network first, fall back to cache, fall back to shell.
   if (request.mode === 'navigate') {
     event.respondWith(
       (async () => {
         try {
           const fresh = await fetch(request);
-          // Only cache OK, basic/cors navigations (skip errors / redirects / opaque).
           if (fresh && fresh.ok && fresh.type === 'basic') {
             const cache = await caches.open(CACHE);
             cache.put(request, fresh.clone()).catch(() => {});
@@ -73,7 +78,6 @@ self.addEventListener('fetch', (event) => {
           const cache = await caches.open(CACHE);
           const cached = await cache.match(request);
           if (cached) return cached;
-          // Last resort: the offline shell.
           const shell = await cache.match('/');
           if (shell) return shell;
           throw err;
@@ -83,14 +87,11 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
-  // Same-origin static assets (JS, CSS, fonts, images, manifest, etc.) —
-  // stale-while-revalidate: serve from cache, refresh in background.
-  // Skip caching opaque / error / non-GET responses.
+  // Same-origin static assets — stale-while-revalidate.
   event.respondWith(
     (async () => {
       const cache = await caches.open(CACHE);
       const cached = await cache.match(request);
-
       const networkPromise = fetch(request)
         .then((response) => {
           if (response && response.ok && response.type === 'basic') {
@@ -99,19 +100,73 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => undefined);
-
       if (cached) {
-        // Serve stale immediately, refresh in background.
         event.waitUntil(networkPromise);
         return cached;
       }
-
-      // Not in cache — must hit the network.
       const networkResponse = await networkPromise;
       if (networkResponse) return networkResponse;
-
-      // Nothing we can do — let the browser surface the error.
       return Response.error();
     })(),
   );
+});
+
+// ---------------------------------------------------------------------------
+// Web Share Target handler — extract shared files, redirect to /?shared=1
+// ---------------------------------------------------------------------------
+async function handleShareTarget(event) {
+  const formData = await event.request.formData();
+  const files = formData.getAll('files');
+
+  // Store the shared files in a temporary cache the client can read.
+  // We use the Cache API with a special key "shared-files".
+  const cache = await caches.open('beam-shared');
+  // Store each file as a separate response with a unique URL.
+  const sharedUrls = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i];
+    const sharedUrl = new URL('/__shared__/' + i, self.location.origin);
+    const response = new Response(file, {
+      headers: {
+        'Content-Type': file.type || 'application/octet-stream',
+        'X-File-Name': file.name || `file-${i + 1}`,
+      },
+    });
+    await cache.put(sharedUrl.toString(), response);
+    sharedUrls.push({ url: sharedUrl.toString(), name: file.name || `file-${i + 1}`, type: file.type });
+  }
+
+  // Notify all clients about the shared files.
+  const clients = await self.clients.matchAll({ type: 'window' });
+  for (const client of clients) {
+    client.postMessage({ type: 'shared-files', files: sharedUrls });
+  }
+
+  // Redirect to the app with ?shared=1 so it knows to look for shared files.
+  return Response.redirect('/?shared=1', 303);
+}
+
+// ---------------------------------------------------------------------------
+// Message handler: client asks for shared files.
+// ---------------------------------------------------------------------------
+self.addEventListener('message', (event) => {
+  if (event.data && event.data.type === 'get-shared-files') {
+    event.waitUntil(
+      (async () => {
+        const cache = await caches.open('beam-shared');
+        const keys = await cache.keys();
+        const files = [];
+        for (const key of keys) {
+          const response = await cache.match(key);
+          const name = response.headers.get('X-File-Name') || 'shared-file';
+          const type = response.headers.get('Content-Type') || 'application/octet-stream';
+          const blob = await response.blob();
+          files.push({ name, type, blob });
+          // Clean up after reading.
+          await cache.delete(key);
+        }
+        event.source.postMessage({ type: 'shared-files-data', files });
+      })(),
+    );
+  }
 });

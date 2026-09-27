@@ -348,6 +348,14 @@ export class BeamTransfer {
     entry.received += data.byteLength;
     entry.count = Math.max(entry.count, chunkIndex + 1);
     this.onFileProgress?.(entry.file.id, entry.received, entry.file.size);
+
+    // SAFETY: if all bytes have been received (received >= file size), auto-
+    // finalize immediately — don't wait for the file-end control message.
+    // This fixes the "stuck at 100%" bug where the file-end message arrives
+    // late or the expectedCount calc was off by one.
+    if (!entry.finalized && entry.received >= entry.file.size) {
+      void this.finalizeFile(fileSeq);
+    }
   }
 
   // --------------------------------------------------------------------------------------
@@ -426,8 +434,10 @@ export class BeamTransfer {
         }
 
         // Tell the receiver this file is done — they reassemble + create the blob.
+        // The sender does NOT fire onFileComplete here (no URL on the sender side;
+        // only the receiver has the assembled blob). The receiver's finalizeFile
+        // will fire onFileComplete with a real URL once all chunks arrive.
         ctrl.send(JSON.stringify({ type: "file-end", seq } satisfies ControlMessage));
-        this.onFileComplete?.(meta, "");
       }
 
       ctrl.send(JSON.stringify({ type: "done" } satisfies ControlMessage));

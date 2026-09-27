@@ -14,6 +14,7 @@ import { DragOverlay } from "@/components/beam/drag-overlay";
 export function BeamApp() {
   const params = useSearchParams();
   const sessionIdParam = params.get("r");
+  const sharedParam = params.get("shared");
   const {
     state,
     beginSending,
@@ -30,6 +31,32 @@ export function BeamApp() {
     reorderFiles,
     sendPastedText,
   } = useBeamSession(sessionIdParam);
+
+  // ---- Web Share Target: pick up files shared TO Beam from the phone's
+  // share sheet. When a user shares a file to Beam, the service worker
+  // stores it + redirects to /?shared=1. We ask the SW for the files and
+  // auto-load them into the sender flow. ----
+  React.useEffect(() => {
+    if (sharedParam !== "1") return;
+    if (!("serviceWorker" in navigator)) return;
+    const sw = navigator.serviceWorker.controller;
+    if (!sw) return;
+    // Ask the SW for the shared files.
+    sw.postMessage({ type: "get-shared-files" });
+    const handler = (event: MessageEvent) => {
+      if (event.data?.type === "shared-files-data" && event.data.files?.length > 0) {
+        const files = event.data.files.map(
+          (f: { name: string; type: string; blob: Blob }) =>
+            new File([f.blob], f.name, { type: f.type }),
+        );
+        beginSending(files);
+        // Clean the URL so a refresh doesn't re-trigger.
+        window.history.replaceState({}, "", "/");
+      }
+    };
+    navigator.serviceWorker.addEventListener("message", handler);
+    return () => navigator.serviceWorker.removeEventListener("message", handler);
+  }, [sharedParam, beginSending]);
 
   const isReceiver = state.mode === "receiver";
 

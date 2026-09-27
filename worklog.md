@@ -814,3 +814,19 @@ FIX:
 - Verified locally: `PORT=3999 npx tsx index.ts` starts cleanly, /health responds. Full transfer test passes (All yours, 100%, zero errors).
 
 Result: user reports "Your service is live 🎉" on Render. The SIGTERM was just the first deploy attempt restarting.
+
+---
+Task ID: fix-stuck-100-confetti-download-share-target
+Agent: main (user: "stuck at 100%, show confetti, move share to bottom, change to download button, stop spinner")
+Task: Fix stuck-at-100% + add confetti on download + rename to Download button + stop spinner when done
+
+FIXES:
+1. **Stuck at 100%**: Added a safety auto-finalize in handleChunkMessage — when `entry.received >= entry.file.size`, immediately calls `finalizeFile(seq)` instead of waiting for the `file-end` control message (which can arrive late or not at all if the expectedCount calc was off by one). The file now transitions to "done" the moment all bytes arrive.
+2. **Confetti on download**: Created src/components/beam/confetti.tsx — a lightweight CSS confetti burst (24 colored dots flying outward) that triggers when the user clicks Download. No library, pure CSS animation.
+3. **Download button (was Save)**: Renamed the per-file "Save" button to "Download" — bigger, bolder, with hover scale. The old "Share" per-file button is removed; Share all/Share image stays at the bottom of the receiver panel via the aggregate actions. "Save all" renamed to "Download all" (bigger, primary CTA).
+4. **Stop spinner when done**: The Loader2 spinner in FileRow only renders when `file.status === "transferring"` — when `done`, it shows a checkmark + "Ready to save" (or "Downloaded" after the user clicks). The spinner never persists after completion.
+5. **"Press Save to download" banner**: already added last round, confirmed showing.
+
+VERIFIED:
+- Transfer completes: "All yours", sm.txt 100%, "Press Save to download" banner shows, "Download" button visible. Zero errors.
+- Lint: 0 errors, 1 warning (harmless font warning).

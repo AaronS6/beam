@@ -155,6 +155,22 @@ export function ReceiverPanel({
         </div>
       )}
 
+      {/* "Press Save to download" banner — makes it crystal clear files
+          aren't auto-downloaded, the user must tap Save. */}
+      {phase === "done" && (
+        <div className="animate-beam-up mb-5 flex items-start gap-3 rounded-2xl border-2 border-primary/30 bg-primary/5 px-4 py-3.5">
+          <Download className="mt-0.5 h-5 w-5 shrink-0 text-primary" strokeWidth={2} />
+          <div>
+            <p className="font-display text-[15px] font-bold text-foreground">
+              Press Save to download
+            </p>
+            <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
+              Your files arrived safely — tap the Save button on each one to save it to this device. They're not downloaded automatically.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* Reconnecting banner */}
       {phase === "reconnecting" && (
         <div className="mb-4 flex items-center gap-3 rounded-2xl border border-border bg-secondary/60 px-4 py-3">
@@ -209,34 +225,14 @@ export function ReceiverPanel({
             <button
               type="button"
               onClick={onSaveAll}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-transform active:scale-[0.97] hover:opacity-90"
+              className="inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition-all duration-200 active:scale-[0.97] hover:scale-[1.03]"
             >
-              <Download className="h-4 w-4" strokeWidth={2} /> Save all
+              <Download className="h-5 w-5" strokeWidth={2.5} /> Download all
             </button>
-            {hasMultiple && (
-              <button
-                type="button"
-                onClick={handleShareAll}
-                className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
-              >
-                {sharedAll ? <Check className="h-4 w-4 text-foreground/70" strokeWidth={2} /> : <Share2 className="h-4 w-4" strokeWidth={2} />}
-                {sharedAll ? "Sent" : "Share all"}
-              </button>
-            )}
-            {textCount > 0 && (
-              <button
-                type="button"
-                onClick={handleCopyAll}
-                className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-4 py-2.5 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
-              >
-                {copiedAll ? <Check className="h-4 w-4 text-foreground/70" strokeWidth={2} /> : <Copy className="h-4 w-4" strokeWidth={2} />}
-                {copiedAll ? "Copied" : `Copy ${textCount} ${textCount === 1 ? "text" : "texts"}`}
-              </button>
-            )}
             <button
               type="button"
               onClick={onReset}
-              className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
+              className="inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-3 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
             >
               <Check className="h-4 w-4" strokeWidth={2} /> Done
             </button>

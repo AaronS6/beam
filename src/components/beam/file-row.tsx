@@ -11,10 +11,10 @@ import {
   Copy,
   ChevronDown,
   FileText,
-  Share2,
 } from "lucide-react";
 import { formatBytes } from "@/lib/format";
 import type { FileItem } from "@/hooks/use-beam-session";
+import { Confetti } from "./confetti";
 
 function fileKind(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
@@ -54,9 +54,9 @@ export function FileRow({
   const [previewOpen, setPreviewOpen] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
   const [shared, setShared] = React.useState(false);
+  const [downloaded, setDownloaded] = React.useState(false);
+  const [confetti, setConfetti] = React.useState(false);
   const hasText = done && !!file.text;
-  // Show the thumbnail whenever we have an image URL — on the sender's waiting
-  // queue (queued) AND on the receiver once the file is complete (done).
   const hasImage = !!file.imageUrl;
 
   const handleCopy = () => {
@@ -64,6 +64,15 @@ export function FileRow({
     onCopyText(file.text);
     setCopied(true);
     setTimeout(() => setCopied(false), 1800);
+  };
+
+  const handleDownload = () => {
+    if (!file.url || !onSave) return;
+    onSave(file.url, file.name);
+    setDownloaded(true);
+    setConfetti(true);
+    setTimeout(() => setConfetti(false), 100);
+    setTimeout(() => setDownloaded(false), 2000);
   };
 
   const isSnippet = file.name === "snippet.txt" || file.name === "link.txt";
@@ -74,10 +83,11 @@ export function FileRow({
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      className={`rounded-2xl border border-border bg-card p-3.5 transition-colors ${
+      className={`relative overflow-visible rounded-2xl border border-border bg-card p-3.5 transition-colors ${
         draggable ? "cursor-grab active:cursor-grabbing" : ""
       }`}
     >
+      <Confetti trigger={confetti} />
       <div className="flex items-center gap-3">
         {/* Type chip — or image thumbnail for received images */}
         {hasImage ? (
@@ -122,6 +132,7 @@ export function FileRow({
           </div>
           <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span>{fileKind(file.name)}</span>
+            {/* Spinner ONLY while transferring — stops when done */}
             {file.status === "transferring" && (
               <>
                 <span>·</span>
@@ -133,7 +144,7 @@ export function FileRow({
               <>
                 <span>·</span>
                 <Check className="h-3 w-3 text-foreground/70" />
-                <span>Ready</span>
+                <span>{downloaded ? "Downloaded" : "Ready to save"}</span>
               </>
             )}
             {file.status === "error" && (
@@ -146,7 +157,7 @@ export function FileRow({
           </div>
         </div>
 
-        {/* Action */}
+        {/* Action — DOWNLOAD is the primary button (replaces Save) */}
         <div className="flex shrink-0 items-center gap-1.5">
           {hasText && (
             <button
@@ -163,33 +174,18 @@ export function FileRow({
               {copied ? "Copied" : "Copy"}
             </button>
           )}
-          {hasImage && onShareImage && (
-            <button
-              type="button"
-              onClick={() => {
-                onShareImage(file.imageUrl!, file.name, file.mime || "image/png");
-                setShared(true);
-                setTimeout(() => setShared(false), 1800);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-2 text-xs font-medium text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
-              aria-label={`Share ${file.name}`}
-            >
-              {shared ? (
-                <Check className="h-3.5 w-3.5 text-foreground/70" strokeWidth={2} />
-              ) : (
-                <Share2 className="h-3.5 w-3.5" strokeWidth={2} />
-              )}
-              {shared ? "Sent" : "Share"}
-            </button>
-          )}
           {done && onSave && file.url && (
             <button
               type="button"
-              onClick={() => onSave(file.url!, file.name)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-beam px-3.5 py-2 text-xs font-medium text-white transition-transform active:scale-[0.97] hover:opacity-90"
+              onClick={handleDownload}
+              className="inline-flex items-center gap-1.5 rounded-full bg-beam px-4 py-2 text-xs font-bold text-white transition-all duration-200 active:scale-[0.97] hover:scale-[1.05]"
             >
-              <Download className="h-3.5 w-3.5" strokeWidth={2} />
-              Save
+              {downloaded ? (
+                <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
+              ) : (
+                <Download className="h-3.5 w-3.5" strokeWidth={2.5} />
+              )}
+              {downloaded ? "Saved" : "Download"}
             </button>
           )}
           {done && !onSave && !hasText && (
@@ -230,7 +226,7 @@ export function FileRow({
         </div>
       )}
 
-      {/* Image preview (expandable — receiver once done; sender anytime) */}
+      {/* Image preview (expandable) */}
       {hasImage && done && (
         <div className="mt-3 border-t border-border/70 pt-3">
           <button
