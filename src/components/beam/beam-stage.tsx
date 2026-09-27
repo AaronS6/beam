@@ -25,7 +25,7 @@ export function BeamStage({
           className="pointer-events-none absolute -inset-4 rounded-[36px] opacity-40 blur-2xl animate-beam-spin"
           style={{
             background:
-              "conic-gradient(from 0deg, transparent 0deg, #FF7A5C 60deg, transparent 140deg, #FF4D8D 210deg, transparent 300deg)",
+              "conic-gradient(from 0deg, transparent 0deg, #7AB8F0 60deg, transparent 140deg, #9CCAF6 210deg, transparent 300deg)",
           }}
         />
       )}
@@ -35,12 +35,12 @@ export function BeamStage({
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0 rounded-[28px] animate-beam-pulse"
-            style={{ border: "1px solid color-mix(in srgb, #FF7A5C 55%, transparent)" }}
+            style={{ border: "1px solid color-mix(in srgb, #7AB8F0 55%, transparent)" }}
           />
           <div
             aria-hidden
             className="pointer-events-none absolute inset-0 rounded-[28px] animate-beam-pulse"
-            style={{ border: "1px solid color-mix(in srgb, #FF4D8D 55%, transparent)", animationDelay: "1.4s" }}
+            style={{ border: "1px solid color-mix(in srgb, #9CCAF6 55%, transparent)", animationDelay: "1.4s" }}
           />
         </>
       )}

@@ -10,8 +10,8 @@ export function Footer() {
           <svg width="20" height="20" viewBox="0 0 64 64" fill="none" aria-hidden>
             <defs>
               <linearGradient id="footerMarkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" stopColor="#FF6B4A" />
-                <stop offset="100%" stopColor="#FF4D8D" />
+                <stop offset="0%" stopColor="#7AB8F0" />
+                <stop offset="100%" stopColor="#9CCAF6" />
               </linearGradient>
             </defs>
             <rect x="8" y="14" width="16" height="36" rx="4.5" fill="none" stroke="url(#footerMarkGrad)" strokeWidth="2.4" />

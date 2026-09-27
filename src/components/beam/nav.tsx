@@ -15,8 +15,8 @@ export function Nav() {
             <svg width="26" height="26" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
               <defs>
                 <linearGradient id="navMarkGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" stopColor="#FF6B4A" />
-                  <stop offset="100%" stopColor="#FF4D8D" />
+                  <stop offset="0%" stopColor="#7AB8F0" />
+                  <stop offset="100%" stopColor="#9CCAF6" />
                 </linearGradient>
               </defs>
               {/* Outline-only device shapes */}

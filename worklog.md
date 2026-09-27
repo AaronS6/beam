@@ -516,3 +516,43 @@ Stage Summary:
 - "Send images" is the default primary CTA every time the site opens (Images mode default).
 - Card layout is fully centered — icon, headline, toggle, button, store toggle all mx-auto/text-center.
 - Files modified: src/components/beam-logo.tsx, src/components/beam/{nav,footer,file-composer}.tsx.
+
+---
+Task ID: light-blue-theme
+Agent: main (user: "buttons and everything should be a light blue theme, but don't make it too visible white and light blue theme")
+Task: Shift the accent from coral to a soft, muted light-blue (not too bright/white), keep the dark background
+
+Work Log:
+- Was: dark charcoal background + warm coral accent (#FF6B4A → #FF4D8D gradient).
+- Now: dark charcoal-blue background + SOFT MUTATED light-blue accent (#7AB8F0), kept calm — not bright/white.
+
+PALETTE CHANGES (src/app/globals.css :root):
+- background #131722 (deep charcoal-blue, cooler than the old warm #14100E)
+- card #1B2030 (elevated dark blue-tinted surface)
+- foreground #EEF2F8 (cool off-white)
+- primary/brand #7AB8F0 (soft muted light blue — the accent)
+- brand-deep #9CCAF6 (lighter blue for hover)
+- secondary #232A3D, muted-foreground #8E9AB0 (cool gray)
+- border #2E3850 (cool dark hairline)
+- ring #7AB8F0
+- beam-gradient: linear-gradient(135deg, #7AB8F0 → #9CCAF6) (was coral→pink)
+- chart colors all shifted to blue family.
+- text-beam-animate gradient (the "scan." word): now #7AB8F0 → #9CCAF6 → #B8DCF8 → #7AB8F0 (was coral→pink→coral).
+- beam-glow halo: the pink #FF4D8D tint → #9CCAF6.
+
+LOGO + DECOR (sed replacement across 4 files + BackgroundDecor rewrite):
+- All logo gradient stops (#FF6B4A → #7AB8F0, #FF4D8D → #9CCAF6) in beam-logo.tsx, nav.tsx, beam-stage.tsx, footer.tsx. Logos remain OUTLINE/transparent (stroke-only) — now with blue gradient strokes.
+- BackgroundDecor: coral/pink/amber radial glows → soft blue/light-blue/pale-blue glows at 12-20% opacity on the charcoal-blue background.
+- beam-stage conic gradient + pulse rings: coral → blue.
+
+E2E VERIFICATION (agent-browser):
+- CSS var check: --primary = "#7ab8f0" (soft muted light blue, confirmed).
+- VLM confirmed: (1) accent is soft muted light blue (not bright white, not coral) ✓ (2) background still dark charcoal ✓ (3) "Send images" button is light blue ✓ (4) outline logo uses light-blue gradient stroke (rects verified fill="none" stroke=url) ✓ (5) animated "scan." word uses a light-blue gradient ✓.
+- Transfer works end-to-end in the blue theme: uploaded bt.txt → sender QR → receiver "All yours" 100%, zero console errors.
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors (cleanup sweeps running clean).
+
+Stage Summary:
+- The whole accent system is now a soft, muted light blue (#7AB8F0) — calm, not too bright/white as requested.
+- Dark charcoal-blue background preserved (not white).
+- Logos stay transparent/outline (now blue gradient strokes).
+- All coral references purged from globals.css + the 4 logo components + BackgroundDecor.

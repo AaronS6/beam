@@ -35,8 +35,8 @@ export function BeamLogo({
       >
         <defs>
           <linearGradient id={gid} x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#FF6B4A" />
-            <stop offset="100%" stopColor="#FF4D8D" />
+            <stop offset="0%" stopColor="#7AB8F0" />
+            <stop offset="100%" stopColor="#9CCAF6" />
           </linearGradient>
         </defs>
         {/* Outline-only device shapes — transparent fill, thin gradient stroke */}

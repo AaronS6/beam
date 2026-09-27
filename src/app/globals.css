@@ -60,47 +60,47 @@
   /* Generous radius — 24px on the main card, 16px on buttons/chips */
   --radius: 1.5rem;
 
-  /* ---- DARK-ONLY (no light mode). WeTransfer-style deep charcoal with
-         a confident coral accent. The background is the main character. ---- */
-  --brand: #FF6B4A;            /* confident warm coral — the accent */
-  --brand-soft: #2A1A14;       /* deep warm tint for decoration */
-  --brand-deep: #FF8A6E;       /* lighter coral — buttons on dark */
+  /* ---- DARK-ONLY (no light mode). Deep charcoal background with a soft,
+         muted light-blue accent — calm, not too bright/white. ---- */
+  --brand: #7AB8F0;            /* soft muted light blue — the accent */
+  --brand-soft: #1A2230;       /* deep blue-tinted dark for decoration */
+  --brand-deep: #9CCAF6;       /* lighter blue for hover states */
 
-  --background: #14100E;       /* deep charcoal-near-black, warm not blue */
-  --foreground: #F5EDE6;       /* warm off-white text */
-  --card: #1F1814;             /* elevated warm dark surface — the floating card */
-  --card-foreground: #F5EDE6;
-  --popover: #1F1814;
-  --popover-foreground: #F5EDE6;
-  --primary: #FF6B4A;          /* coral primary button */
-  --primary-foreground: #1A0D08;
-  --secondary: #2A201A;        /* darker warm chip */
-  --secondary-foreground: #F5EDE6;
-  --muted: #2A201A;
-  --muted-foreground: #9C8A7E; /* warm gray secondary text */
-  --accent: #2A201A;
-  --accent-foreground: #F5EDE6;
+  --background: #131722;       /* deep charcoal-blue (cool, not warm) */
+  --foreground: #EEF2F8;       /* cool off-white text */
+  --card: #1B2030;             /* elevated dark surface — the floating card */
+  --card-foreground: #EEF2F8;
+  --popover: #1B2030;
+  --popover-foreground: #EEF2F8;
+  --primary: #7AB8F0;          /* soft light-blue primary button */
+  --primary-foreground: #0E1420;
+  --secondary: #232A3D;        /* darker blue-tinted chip */
+  --secondary-foreground: #EEF2F8;
+  --muted: #232A3D;
+  --muted-foreground: #8E9AB0; /* cool gray secondary text */
+  --accent: #232A3D;
+  --accent-foreground: #EEF2F8;
   --destructive: #FF5A5A;
   --destructive-foreground: #FFFFFF;
-  --border: #3A2E26;           /* warm dark hairline */
-  --input: #3A2E26;
-  --ring: #FF6B4A;
-  --chart-1: #FF6B4A;
-  --chart-2: #FF9E7B;
-  --chart-3: #C4451E;
-  --chart-4: #FFD9CC;
-  --chart-5: #9C8A7E;
-  --sidebar: #1F1814;
-  --sidebar-foreground: #F5EDE6;
-  --sidebar-primary: #FF6B4A;
-  --sidebar-primary-foreground: #1A0D08;
-  --sidebar-accent: #2A201A;
-  --sidebar-accent-foreground: #F5EDE6;
-  --sidebar-border: #3A2E26;
-  --sidebar-ring: #FF6B4A;
+  --border: #2E3850;           /* cool dark hairline */
+  --input: #2E3850;
+  --ring: #7AB8F0;
+  --chart-1: #7AB8F0;
+  --chart-2: #9CCAF6;
+  --chart-3: #5A9EE6;
+  --chart-4: #B8DCF8;
+  --chart-5: #8E9AB0;
+  --sidebar: #1B2030;
+  --sidebar-foreground: #EEF2F8;
+  --sidebar-primary: #7AB8F0;
+  --sidebar-primary-foreground: #0E1420;
+  --sidebar-accent: #232A3D;
+  --sidebar-accent-foreground: #EEF2F8;
+  --sidebar-border: #2E3850;
+  --sidebar-ring: #7AB8F0;
 
-  /* The brand gradient — coral → warm pink, used for the QR glow + progress */
-  --beam-gradient: linear-gradient(135deg, #FF6B4A 0%, #FF4D8D 100%);
+  /* The brand gradient — soft blue → lighter blue, used for QR glow + progress */
+  --beam-gradient: linear-gradient(135deg, #7AB8F0 0%, #9CCAF6 100%);
 }
 
 @layer base {
@@ -160,7 +160,7 @@
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent),
       0 0 48px 6px color-mix(in srgb, var(--brand) 35%, transparent),
-      0 0 96px 16px color-mix(in srgb, #FF4D8D 22%, transparent);
+      0 0 96px 16px color-mix(in srgb, #9CCAF6 22%, transparent);
   }
 
   /* Custom scrollbar for long file lists */
@@ -260,7 +260,7 @@
   100% { background-position: 200% 50%; }
 }
 .text-beam-animate {
-  background-image: linear-gradient(90deg, #FF7A5C, #FF4D8D, #FF9374, #FF7A5C);
+  background-image: linear-gradient(90deg, #7AB8F0, #9CCAF6, #B8DCF8, #7AB8F0);
   background-size: 200% auto;
   -webkit-background-clip: text;
   background-clip: text;
