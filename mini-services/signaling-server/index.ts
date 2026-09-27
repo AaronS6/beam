@@ -56,8 +56,10 @@
 import { createServer } from "node:http";
 import { Server } from "socket.io";
 
-// Hardcoded per spec — Caddy gateway expects this exact port.
-const PORT = 3003;
+// PORT: Render assigns a dynamic port via the PORT env var. The sandbox/dev
+// Caddy gateway expects 3003 (set via XTransformPort). We honor the env var
+// when present (production), falling back to 3003 (dev/sandbox).
+const PORT = Number(process.env.PORT) || 3003;
 
 // Room namespacing: every session lives in a room named `session:{sessionId}`.
 const roomName = (sessionId: string) => `session:${sessionId}`;

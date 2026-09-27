@@ -777,3 +777,23 @@ FIX:
 
 Stage Summary:
 - The Render/Vercel build error is fixed. The app is now pure Path A (direct P2P) with zero server-side storage dependencies — no Prisma, no disk, no instrumentation hook. Deploys cleanly to any free web service.
+
+---
+Task ID: fix-render-502
+Agent: main (user: "HTTP ERROR 502 on beam-signaling.onrender.com")
+Task: Fix the 502 error on Render — signaling server wasn't binding to Render's assigned port
+
+ROOT CAUSE:
+- The signaling server had `const PORT = 3003` hardcoded. Render assigns a dynamic port via the `PORT` environment variable. The server ignored it → Render's health check found nothing on the assigned port → 502 Bad Gateway.
+- Also: the render.yaml file was accidentally a copy of package.json (wrong content), so Render's auto-config wasn't correct.
+
+FIX:
+- mini-services/signaling-server/index.ts: changed `const PORT = 3003` → `const PORT = Number(process.env.PORT) || 3003`. Now honors Render's PORT env var in production, falls back to 3003 in the sandbox/dev (where Caddy expects 3003).
+- mini-services/signaling-server/render.yaml: rewrote as a proper Render Blueprint config (web service, Node runtime, free plan, buildCommand `bun install`, startCommand `bun run start`, healthCheckPath `/health`).
+- Verified locally: `PORT=4000 bun run start` → binds to 4000 correctly. Default (no PORT) → binds to 3003 (sandbox). Lint clean.
+
+Next steps for the user:
+- Push to GitHub (the render.yaml + the PORT fix will be picked up).
+- On Render: either re-deploy manually, or if using the Blueprint, create a new service from the render.yaml.
+- Make sure Render's Start Command is `bun run start` (or `node index.js` if Render doesn't have Bun).
+- Render auto-sets the PORT env var — no manual configuration needed.

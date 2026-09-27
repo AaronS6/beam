@@ -1,17 +1,12 @@
-{
-  "name": "beam-signaling",
-  "version": "1.0.0",
-  "description": "Beam WebRTC signaling server",
-  "type": "module",
-  "main": "index.ts",
-  "scripts": {
-    "dev": "bun --hot index.ts",
-    "start": "bun index.ts"
-  },
-  "dependencies": {
-    "socket.io": "^4.8.4"
-  },
-  "engines": {
-    "bun": ">=1.0.0"
-  }
-}
+services:
+  - type: web
+    name: beam-signaling
+    runtime: node
+    plan: free
+    rootDir: mini-services/signaling-server
+    buildCommand: bun install
+    startCommand: bun run start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
