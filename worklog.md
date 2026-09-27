@@ -706,3 +706,27 @@ Work Log:
 
 Stage Summary:
 - Deploy guide delivered. The app is production-ready.
+
+---
+Task ID: free-web-services-deploy
+Agent: main (user: "i want everything to be free, mostly using web services, no apps to download")
+Task: Make the app deployable on free web service tiers (Vercel + Render) with no local installs
+
+Work Log:
+- Made Path B (server storage) gracefully optional. On serverless hosts (Vercel) with no persistent disk, the app defaults to Path A (direct P2P) and hides the "Store temporarily" toggle.
+  - src/instrumentation.ts: the cleanup scheduler now probes for writable disk + DB before starting; skips cleanly if unavailable (logs "Path B disabled, Path A P2P still works").
+  - src/app/api/beam/store/route.ts: added storageAvailable() check; returns 501 "storage unavailable" if the host can't write.
+  - src/app/api/beam/store/status/route.ts (NEW): GET endpoint that returns {available: bool} so the frontend can probe at runtime.
+  - src/hooks/use-beam-session.ts: added storeAvailable state + a probe effect that fetches /api/beam/store/status on mount. When false, the "Store temporarily" toggle is hidden and storeMode is forced off.
+  - src/components/beam/file-composer.tsx: the "How should they go?" Direct/Store toggle now only renders when storeAvailable is true.
+- Created vercel.json (Next.js framework config, regions, env var NEXT_PUBLIC_SIGNALING_URL).
+- Created mini-services/signaling-server/render.yaml (Render Web Service config for the signaling server).
+- Verified: production build (bun run build) succeeds cleanly. Store status probe works. Path A transfer still works end-to-end.
+
+Deploy guide (free, browser-only, no apps):
+1. Frontend → Vercel: push the repo to GitHub, import on vercel.com, set NEXT_PUBLIC_SIGNALING_URL env var.
+2. Signaling server → Render: connect the mini-services/signaling-server folder as a Web Service on render.com (free tier).
+Both services have permanent free tiers, no credit card, fully browser-deployable.
+
+Stage Summary:
+- The app is now deployable on free web services with zero local installs. Path A (direct P2P) works everywhere; Path B (store) auto-disables on serverless and hides its toggle.

@@ -56,7 +56,7 @@ export function SenderPanel({
 }) {
   const {
     phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice,
-    createdAt, quality, candidateType, storeMode, storeExpiresAt, nearby,
+    createdAt, quality, candidateType, storeMode, storeAvailable, storeExpiresAt, nearby,
   } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
@@ -99,6 +99,7 @@ export function SenderPanel({
               onFiles={onFiles}
               onPasteText={onPasteText}
               storeMode={storeMode}
+              storeAvailable={storeAvailable}
               onToggleStoreMode={onToggleStoreMode}
             />
           </BeamStage>

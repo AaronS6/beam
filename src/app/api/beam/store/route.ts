@@ -32,9 +32,19 @@ const UPLOAD_DIR = path.join(process.cwd(), ".beam-store");
 /** Hard 5-minute TTL ceiling for any uploaded file. */
 const TTL_MS = 5 * 60 * 1000;
 
-async function ensureUploadDir(): Promise<void> {
-  if (!existsSync(UPLOAD_DIR)) {
-    await fs.mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
+/** Whether Path B storage is available on this host. On serverless hosts
+ *  (Vercel) with no persistent disk, this returns false → the store API
+ *  returns 501 and the frontend hides the "Store temporarily" option. */
+async function storageAvailable(): Promise<boolean> {
+  try {
+    if (!existsSync(UPLOAD_DIR)) {
+      await fs.mkdir(UPLOAD_DIR, { recursive: true, mode: 0o700 });
+    }
+    // Verify the DB is reachable too.
+    await db.storedFile.count();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -71,7 +81,13 @@ export async function POST(req: NextRequest) {
     const buf = Buffer.from(await file.arrayBuffer());
     const size = buf.length;
 
-    await ensureUploadDir();
+    // Bail out cleanly if storage isn't available on this host (e.g. Vercel).
+    if (!(await storageAvailable())) {
+      return NextResponse.json(
+        { ok: false, error: "Server storage unavailable — use direct peer-to-peer mode instead." },
+        { status: 501 },
+      );
+    }
 
     // Generate the public download token up-front so we can write the .enc
     // blob to disk before the DB insert (atomic-on-success: file write first,

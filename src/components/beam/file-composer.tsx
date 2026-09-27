@@ -16,11 +16,13 @@ export function FileComposer({
   onFiles,
   onPasteText,
   storeMode,
+  storeAvailable,
   onToggleStoreMode,
 }: {
   onFiles: (files: File[]) => void;
   onPasteText?: (text: string) => void;
   storeMode: boolean;
+  storeAvailable: boolean;
   onToggleStoreMode: (v: boolean) => void;
 }) {
   // DEFAULT = "images" — "Send images" is the primary CTA every time the site opens.
@@ -187,7 +189,9 @@ export function FileComposer({
         onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }}
       />
 
-      {/* STORE TEMPORARILY — big, visible segmented toggle (centered) */}
+      {/* STORE TEMPORARILY — big, visible segmented toggle (centered).
+          Hidden when server storage isn't available (e.g. Vercel serverless). */}
+      {storeAvailable && (
       <div className="mt-7">
         <p className="mb-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-muted-foreground/70">
           How should they go?
@@ -238,6 +242,7 @@ export function FileComposer({
             : "Files stream device-to-device. Nothing is ever stored anywhere."}
         </p>
       </div>
+      )}
     </div>
   );
 }

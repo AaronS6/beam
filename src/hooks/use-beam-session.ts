@@ -57,6 +57,10 @@ export type SessionState = {
   peakSpeed: number;
   candidateType: "host" | "srflx" | "prflx" | "relay" | "unknown" | null;
   storeMode: boolean; // Path B toggle
+  /** Whether Path B (server storage) is available on this host. False on
+   *  serverless hosts (Vercel) with no persistent disk → "Store temporarily"
+   *  toggle is hidden. */
+  storeAvailable: boolean;
   /** Path B: epoch ms when stored files expire (createdAt + 5 min). Null on Path A. */
   storeExpiresAt: number | null;
   /** Nearby devices seen via the lobby (presence). Sender can tap one to send. */
@@ -81,6 +85,7 @@ const INITIAL: SessionState = {
   peakSpeed: 0,
   candidateType: null,
   storeMode: false,
+  storeAvailable: true, // optimistic default; corrected on mount by the status probe
   storeExpiresAt: null,
   nearby: [],
 };
@@ -119,6 +124,29 @@ export function useBeamSession(sessionIdParam?: string | null) {
 
   const setStoreMode = useCallback((v: boolean) => {
     patch({ storeMode: v });
+  }, [patch]);
+
+  // ---- Probe whether Path B (server storage) is available on this host ----
+  // On serverless hosts (Vercel) with no persistent disk, this returns false
+  // → the "Store temporarily" toggle is hidden, and the app defaults to Path A.
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/beam/store/status")
+      .then((r) => (r.ok ? r.json() : { available: false }))
+      .then((data) => {
+        if (cancelled) return;
+        if (data && data.available === false) {
+          patch({ storeAvailable: false, storeMode: false });
+        } else {
+          patch({ storeAvailable: true });
+        }
+      })
+      .catch(() => {
+        if (!cancelled) patch({ storeAvailable: false });
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [patch]);
 
   // ---- Lobby / nearby-device presence ----
