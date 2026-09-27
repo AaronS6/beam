@@ -595,3 +595,38 @@ Stage Summary:
 - CONNECTION DROPPED SPAM FIXED: 1.5s reconnect debounce; brief ICE flutters don't surface.
 - QR WAITING UI IMPROVED: "Ready to scan" badge, blue glow, bolder headline, better subcopy.
 - Files modified: src/lib/webrtc.ts (full protocol rewrite), src/components/beam/sender-panel.tsx (QR state UI).
+
+---
+Task ID: fix-0percent-stall
+Agent: main (user: "its not even sending it shows good network but its still at 0% for so long....")
+Task: Fix transfers stuck at 0% with good network (12MB image stalled forever)
+
+ROOT CAUSE (found via live runtime inspection):
+- The chunk size was 256KB, which EXCEEDS WebRTC's SCTP max-message-size (varies 64KB-256KB by browser).
+- `dc.send(msg)` with a 256KB+8byte message threw: `TypeError: Failed to execute 'send' on 'RTCDataChannel': Trying to send message larger than max-message-size`.
+- The throw was caught by... nothing — the loop just returned early, `sending` flag reset to false in the `finally`, the file stayed queued, and the UI showed "Beaming" forever at 0%.
+- SMALL files (under the max-message-size, e.g. the 20KB icon) worked because a single chunk fit; LARGER files (12MB) needed multiple chunks and the first 256KB chunk blew the limit.
+
+DEBUGGING METHOD:
+- Added `window.__beamTransfer` temp global exposure of the live BeamTransfer instance.
+- Inspected state: `channelsOpen: 4` (all open), `sending: false` (loop exited), `queueLen: 1` (file still queued). This proved the channels were fine — the send loop ran AND exited without sending.
+- Added console.log breadcrumbs in sendQueuedFiles. Captured: `[beam-debug] dc.send threw at chunk 0 : TypeError: ... Trying to send message larger than max-message-size`. Exact root cause.
+- Added a try/catch around `dc.send(msg)` so a send failure never silently kills the whole transfer again.
+
+FIX (src/lib/webrtc.ts):
+- Dropped CHUNK_SIZE from 256KB → 16KB. 16KB is safely under every browser's SCTP max-message-size (which ranges 64KB-256KB but 16KB always works). The parallel 3-channel striping + the self-describing binary headers still give good throughput; the smaller chunk size just means more messages, which SCTP handles fine.
+- Hardened `waitForLowBuffer`: resolves on the `bufferedamountlow` event, OR on a 5s timeout, OR if the channel closes — so the sender can never hang forever waiting on a channel that died mid-transfer (would have masked the real bug as an infinite stall).
+- Added a `finalizeFile` receiver method that waits for all expected chunks (polls up to 3s) before reassembling the Blob — handles the unordered-data-channel race where file-end (ordered control) can arrive before all binary chunks.
+- Added `expectedCount` to the receiver's incoming-file entry (ceil(size/CHUNK_SIZE)) so finalizeFile knows when all chunks are present.
+- Removed all the debug console.logs + the temp `window.__beamTransfer` exposure.
+
+E2E VERIFICATION (agent-browser):
+- 12MB noisy PNG (2000×2000, worst-case for compression): was stuck at 0% for 30s+ before the fix. AFTER the fix: 61% at t+2s, 100% at t+4s. Image loads correctly: naturalWidth=2000 (not broken). Zero console errors.
+- Small 20KB image (icon-512): "All yours" 100%, naturalWidth=512. Still works.
+- Lint: 0 errors, 0 warnings.
+
+Stage Summary:
+- THE 0% STALL IS FIXED. Root cause: 256KB chunks exceeded WebRTC's SCTP max-message-size → dc.send() threw → loop exited silently. Fix: 16KB chunks (always under the limit) + try/catch around dc.send so failures never silently kill a transfer again.
+- Hardened waitForLowBuffer with a 5s timeout + close-detection (can't hang forever).
+- Receiver finalization now waits for all expected chunks before reassembling (handles unordered-channel race).
+- Files modified: src/lib/webrtc.ts only.

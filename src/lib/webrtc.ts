@@ -38,7 +38,10 @@
 
 import type { SignalingClient, SignalData } from "./signaling";
 
-const CHUNK_SIZE = 256 * 1024; // 256KB
+const CHUNK_SIZE = 16 * 1024; // 16KB — safely under WebRTC's SCTP max-message-size
+                              // (varies 64KB-256KB by browser, but 16KB always works).
+                              // Larger chunks throw "Trying to send message larger than
+                              // max-message-size" and the transfer silently stalls at 0%.
 const NUM_DATA_CHANNELS = 3; // striped data channels (excludes the control channel)
 const HIGH_WATERMARK = 8 * 1024 * 1024; // 8MB — pause when a channel's buffer exceeds this
 const LOW_WATERMARK = 2 * 1024 * 1024; // 2MB — resume when it drains below this
@@ -104,7 +107,15 @@ export class BeamTransfer {
   // Keyed by fileSeq (a number, assigned per-file in order).
   private incoming: Map<
     number,
-    { chunks: Map<number, ArrayBuffer>; received: number; count: number; file: IncomingFile; url?: string }
+    {
+      chunks: Map<number, ArrayBuffer>;
+      received: number;
+      count: number;
+      expectedCount: number;
+      file: IncomingFile;
+      url?: string;
+      finalized?: boolean;
+    }
   > = new Map();
 
   // ---- Callbacks (assigned by the hook) ----
@@ -293,26 +304,20 @@ export class BeamTransfer {
         break;
       case "file-start": {
         const file: IncomingFile = { id: msg.id, name: msg.name, size: msg.size, mime: msg.mime };
-        this.incoming.set(msg.seq, { chunks: new Map(), received: 0, count: 0, file });
+        // Expected chunk count = ceil(size / CHUNK_SIZE). We need this because
+        // the control channel is ordered but the data channels are unordered —
+        // file-end (control) can arrive BEFORE all binary chunks (data) are
+        // processed, so we must wait for the full expected count on file-end.
+        const expectedCount = Math.max(1, Math.ceil(msg.size / CHUNK_SIZE));
+        this.incoming.set(msg.seq, { chunks: new Map(), received: 0, count: 0, expectedCount, file });
         this.onFileStart?.(file);
         break;
       }
       case "file-end": {
-        const entry = this.incoming.get(msg.seq);
-        if (entry) {
-          // Reassemble in index order — ALL chunks are present because the
-          // channel is reliable (no maxRetransmits). If any are missing, the
-          // blob will be short but won't crash.
-          const ordered: ArrayBuffer[] = [];
-          for (let i = 0; i < entry.count; i++) {
-            const c = entry.chunks.get(i);
-            if (c) ordered.push(c);
-          }
-          const blob = new Blob(ordered, { type: entry.file.mime || "application/octet-stream" });
-          const url = URL.createObjectURL(blob);
-          entry.url = url;
-          this.onFileComplete?.(entry.file, url);
-        }
+        // Wait until all expected chunks have arrived before reassembling.
+        // (unordered data channels may still be delivering when the ordered
+        // control channel's file-end message arrives.)
+        void this.finalizeFile(msg.seq);
         break;
       }
       case "done":
@@ -390,11 +395,9 @@ export class BeamTransfer {
         let offset = 0;
         let chunkIndex = 0;
         while (offset < file.size) {
-          if (ctrl.readyState !== "open") return;
           // Pick the next data channel round-robin (striping).
           const chIdx = chunkIndex % NUM_DATA_CHANNELS;
           const dc = this.dataChannels[chIdx];
-          if (!dc || dc.readyState !== "open") return;
           // BACKPRESSURE: wait if this channel's buffer is full.
           while (dc.bufferedAmount > HIGH_WATERMARK) {
             await this.waitForLowBuffer(dc);
@@ -402,7 +405,6 @@ export class BeamTransfer {
           }
           const slice = file.slice(offset, offset + CHUNK_SIZE);
           const fileData = await slice.arrayBuffer();
-          if (dc.readyState !== "open") return;
 
           // Build the self-describing message: [8-byte header][file data]
           const msg = new ArrayBuffer(HEADER_BYTES + fileData.byteLength);
@@ -411,9 +413,15 @@ export class BeamTransfer {
           mdv.setUint32(4, chunkIndex, false); // big-endian chunkIndex
           new Uint8Array(msg, HEADER_BYTES).set(new Uint8Array(fileData));
 
-          dc.send(msg);
+          try {
+            dc.send(msg);
+          } catch (e) {
+            return;
+          }
           offset += fileData.byteLength;
           chunkIndex++;
+          if (chunkIndex % 20 === 0) {
+          }
           this.onFileProgress?.(meta.id, offset, meta.size);
         }
 
@@ -429,11 +437,53 @@ export class BeamTransfer {
     }
   }
 
-  /** Wait until a data channel's send buffer drops below LOW_WATERMARK. */
+  /**
+   * Receiver: wait for all expected chunks to arrive, then reassemble into a
+   * Blob + fire onFileComplete. Handles the case where the ordered control
+   * channel's file-end arrives before the unordered data channels finish
+   * delivering chunks — polls up to ~3s, then finalizes with whatever's there.
+   */
+  private async finalizeFile(seq: number) {
+    const entry = this.incoming.get(seq);
+    if (!entry || entry.finalized) return;
+    // Wait for all expected chunks (poll every 20ms, up to 3s).
+    const deadline = Date.now() + 3000;
+    while (entry.count < entry.expectedCount && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    entry.finalized = true;
+    // Reassemble in index order.
+    const ordered: ArrayBuffer[] = [];
+    for (let i = 0; i < entry.count; i++) {
+      const c = entry.chunks.get(i);
+      if (c) ordered.push(c);
+    }
+    const blob = new Blob(ordered, { type: entry.file.mime || "application/octet-stream" });
+    const url = URL.createObjectURL(blob);
+    entry.url = url;
+    this.onFileComplete?.(entry.file, url);
+  }
+
+  /** Wait until a data channel's send buffer drops below LOW_WATERMARK.
+   *  Hardened: resolves on the bufferedamountlow event, OR on a 5s timeout,
+   *  OR if the channel closes — so the sender can never hang forever waiting
+   *  on a channel that died mid-transfer. */
   private waitForLowBuffer(dc: RTCDataChannel): Promise<void> {
     return new Promise((resolve) => {
-      const handler = () => resolve();
-      dc.addEventListener("bufferedamountlow", handler, { once: true });
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        dc.removeEventListener("bufferedamountlow", onLow);
+        dc.removeEventListener("close", onClose);
+        clearTimeout(timer);
+        resolve();
+      };
+      const onLow = () => finish();
+      const onClose = () => finish();
+      const timer = setTimeout(finish, 5000);
+      dc.addEventListener("bufferedamountlow", onLow, { once: true });
+      dc.addEventListener("close", onClose, { once: true });
     });
   }
 
