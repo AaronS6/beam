@@ -660,3 +660,18 @@ Stage Summary:
 - Nearby device discovery ships end-to-end: lobby presence + invite + auto-join + existing WebRTC transfer. Three ways to send now: QR code, copy link, OR tap a nearby device name.
 - "made by Aaron Shan" added to the top bar (tiny, muted).
 - Files: mini-services/signaling-server/index.ts (lobby + invite + disconnect cleanup), src/lib/signaling.ts (types + methods), src/hooks/use-beam-session.ts (lobby effect + sendToNearby + nearby state), src/components/beam/nearby-devices.tsx (new), src/components/beam/{sender-panel,beam-app,nav}.tsx.
+
+---
+Task ID: deploy-guide
+Agent: main (user: "how to deploy")
+Task: Make code production-ready + write deployment guide
+
+Work Log:
+- Updated src/lib/signaling.ts: the SignalingClient constructor now checks `NEXT_PUBLIC_SIGNALING_URL` env var. If set → connects directly to that URL (production). If unset → falls back to the `?XTransformPort=3003` convention (sandbox/dev). Also supports `NEXT_PUBLIC_SIGNALING_PATH` for custom socket.io paths (e.g. "/socket.io/" behind nginx).
+- Created Caddyfile.prod: production Caddy config with HTTPS + reverse proxy to Next.js (port 3000) + optional signaling server routing.
+- Created deploy.sh: one-command deploy script — installs deps, builds Next.js, installs signaling server deps, pushes Prisma schema, creates .beam-store/, generates .env.production template.
+- Both new files are ready for a single-VPS deployment.
+
+Stage Summary:
+- The app is production-ready. Signaling client supports both sandbox mode (XTransformPort) and production mode (NEXT_PUBLIC_SIGNALING_URL).
+- Deploy guide written below for the user.

@@ -56,17 +56,36 @@ export class SignalingClient {
   onInvite?: (payload: InvitePayload) => void;
 
   constructor() {
-    // Caddy gateway: path "/" + ?XTransformPort=3003 routes to the signaling server.
-    this.socket = io(`/?XTransformPort=${SIGNALING_PORT}`, {
-      path: "/",
-      transports: ["websocket", "polling"],
-      reconnection: true,
-      reconnectionAttempts: Infinity,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 10000,
-      forceNew: true,
-    });
+    // In production: set NEXT_PUBLIC_SIGNALING_URL to the signaling server's
+    // public URL (e.g. "https://beam.example.com" or "https://signal.beam.example.com").
+    // In the sandbox/dev: falls back to the Caddy ?XTransformPort convention.
+    const signalingUrl = process.env.NEXT_PUBLIC_SIGNALING_URL;
+    if (signalingUrl) {
+      // Production: connect directly to the signaling server URL.
+      // The server runs Socket.IO with path: "/" (or "/socket.io/" if behind nginx).
+      this.socket = io(signalingUrl, {
+        path: process.env.NEXT_PUBLIC_SIGNALING_PATH || "/",
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 10000,
+        forceNew: true,
+      });
+    } else {
+      // Sandbox/dev: Caddy gateway routes ?XTransformPort=3003 → port 3003.
+      this.socket = io(`/?XTransformPort=${SIGNALING_PORT}`, {
+        path: "/",
+        transports: ["websocket", "polling"],
+        reconnection: true,
+        reconnectionAttempts: Infinity,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 10000,
+        forceNew: true,
+      });
+    }
 
     this.socket.on("connect", () => this.onConnect?.());
     this.socket.on("disconnect", () => this.onDisconnect?.());

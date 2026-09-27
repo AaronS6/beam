@@ -1,0 +1,33 @@
+# Production Caddyfile — replace beam.example.com with your domain.
+# This serves BOTH the Next.js app AND the signaling server behind one domain
+# with automatic HTTPS (Let's Encrypt).
+
+beam.example.com {
+	# Signaling server (Socket.IO) — route /socket.io/ traffic to port 3003.
+	# The signaling server uses path: "/", so its websocket handshake is at the
+	# root. We route based on the socket.io upgrade header.
+	@signaling {
+		header Connection *Upgrade*
+		header Upgrade websocket
+	}
+	# Alternative: if you run the signaling server on a subpath, use a matcher.
+
+	# Default: reverse proxy everything to Next.js (port 3000).
+	# The signaling server runs on port 3003 and is accessed via a separate
+	# subdomain OR via the NEXT_PUBLIC_SIGNALING_URL env var pointing to it.
+	reverse_proxy localhost:3000
+
+	# If you want both on ONE domain, uncomment this block instead:
+	# @socketio path /socket.io/*
+	# handle @socketio {
+	#   reverse_proxy localhost:3003
+	# }
+	# handle {
+	#   reverse_proxy localhost:3000
+	# }
+}
+
+# Optional: separate subdomain for the signaling server.
+# signal.beam.example.com {
+#   reverse_proxy localhost:3003
+# }
