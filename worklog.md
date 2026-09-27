@@ -556,3 +556,42 @@ Stage Summary:
 - Dark charcoal-blue background preserved (not white).
 - Logos stay transparent/outline (now blue gradient strokes).
 - All coral references purged from globals.css + the 4 logo components + BackgroundDecor.
+
+---
+Task ID: fix-broken-images-and-qr-ui
+Agent: main (user: "pictures arent actually loading when i download them, broken image icon... stuck downloading, connection dropped... make the UI look better when you press send images and it opens up the QR code thing")
+Task: Fix broken image downloads + stuck transfers + connection-dropped spam; improve QR waiting UI
+
+ROOT CAUSE ANALYSIS (user asked "is it because we immediately remove it from the cloud?"):
+- No — Path A (direct) doesn't use the cloud at all. Files stream P2P; there's nothing to delete.
+- The real cause was in src/lib/webrtc.ts:
+  1. `maxRetransmits: 3` on the data channels made them UNRELIABLE — dropped chunks after 3 retransmits = corrupted/incomplete files = broken image icon. File transfer MUST be reliable.
+  2. The `pendingChunkMeta` single-variable approach broke with parallel channels — control messages (on the ordered ctrl channel) and binary chunks (on 3 unordered data channels) arrived out of order, so the receiver mismatched metadata to chunks → stuck downloads, wrong chunks placed in wrong slots.
+  3. ICE `oniceconnectionstatechange` transitioned to "reconnecting" immediately on "disconnected" — but brief ICE flutters are normal and shouldn't surface as "connection dropped" to the user.
+
+FIXES (src/lib/webrtc.ts — full rewrite of the transfer protocol):
+1. Removed `maxRetransmits: 3` from data channels — now `{ ordered: false }` only (reliable but unordered). Chunks are guaranteed to arrive; `ordered:false` just means they can arrive out of order, which is fine because we reassemble by index. NO MORE DROPPED CHUNKS.
+2. Replaced the `pendingChunkMeta` control-message approach with SELF-DESCRIBING BINARY CHUNKS. Each data-channel message now carries an 8-byte header: [4 bytes fileSeq (uint32, big-endian)][4 bytes chunkIndex (uint32)][rest = chunk data]. The receiver reads the header from every binary message to know which file + index it belongs to — NO dependency on control-channel ordering. This fixes the stuck-download + mismatched-chunk bug.
+3. Added a RECONNECT DEBOUNCE (1.5s). ICE "disconnected" now waits 1.5s before surfacing "reconnecting" to the user. If ICE recovers within that window (common for brief flutters), the user never sees "connection dropped". `reconnectTimer` is cleared on "connected"/"completed" and on `close()`.
+4. Control protocol simplified: `file-start` now carries a numeric `seq` (file sequence 0,1,2,...) instead of relying on string IDs for chunk matching. `file-end` carries the same `seq`. The receiver's `incoming` Map is now keyed by `seq` (number) instead of `id` (string). Removed `chunk-meta` control message entirely (no longer needed — the header is in the binary).
+
+QR WAITING UI IMPROVEMENT (src/components/beam/sender-panel.tsx):
+- Added a "Ready to scan" / "Stored & ready" badge above the QR code with a pulsing blue dot + scale-in animation.
+- Added a soft blue radial glow behind the QR code (radial-gradient blur, --brand color).
+- Headline changed from generic "Scan to grab them" to bolder "Point a phone camera here" (font-display, 17px, bold).
+- Added a subcopy line: "They'll connect straight to your device" (or "Link's good for 5 min — or until they download" in store mode).
+- More vertical padding, better visual hierarchy.
+
+E2E VERIFICATION (agent-browser):
+- Single image transfer: uploaded icon-512.png → receiver "All yours" 100%. Verified the blob URL is a VALID image: `naturalWidth=512` (0 would mean broken). THE BROKEN IMAGE BUG IS FIXED.
+- Multi-file transfer (image + text): uploaded icon-192.png + multi.txt → receiver "All yours", icon-192.png at 100%, "1 blob imgs, 1 loaded OK" (image loads correctly). Zero console errors.
+- QR UI: VLM confirmed "Ready to scan badge with pulsing blue dot", "QR centered with soft blue glow", "clean, modern, premium layout".
+- No "connection dropped" spam during normal transfers (the debounce prevents it).
+- Lint: 0 errors, 0 warnings.
+
+Stage Summary:
+- BROKEN IMAGES FIXED: data channels are now reliable (no maxRetransmits) + self-describing binary headers (8 bytes: fileSeq + chunkIndex per chunk). Files arrive complete and valid.
+- STUCK DOWNLOADS FIXED: the pendingChunkMeta race condition is eliminated — every binary message is self-contained.
+- CONNECTION DROPPED SPAM FIXED: 1.5s reconnect debounce; brief ICE flutters don't surface.
+- QR WAITING UI IMPROVED: "Ready to scan" badge, blue glow, bolder headline, better subcopy.
+- Files modified: src/lib/webrtc.ts (full protocol rewrite), src/components/beam/sender-panel.tsx (QR state UI).

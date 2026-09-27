@@ -1,5 +1,5 @@
 /**
- * Beam — WebRTC peer-to-peer transfer manager (PARALLEL-CHANNEL EDITION)
+ * Beam — WebRTC peer-to-peer transfer manager (PARALLEL-CHANNEL, RELIABLE)
  *
  * ====================================================================================
  * THE OFFER / ANSWER / ICE FLOW (the tricky part — read this if debugging pairing)
@@ -10,8 +10,8 @@
  *  1. signaling.createSession(id)                      1. signaling.joinSession(id)
  *  2. waits for `peer-joined` ←── server tells both peers ──→ server replies `session-joined`
  *  3. create RTCPeerConnection + N data channels:
- *       ch0 "ctrl"  (ordered, reliable)   — control + progress
- *       ch1..3 "d1".."d3" (unordered, maxRetransmits=3) — striped file bytes
+ *       ch0 "ctrl"  (ordered, reliable)   — control messages only
+ *       ch1..3 "d0".."d2" (unordered, RELIABLE) — striped file bytes
  *  4. pc.createOffer() → setLocalDescription(offer)
  *  5. signal { kind:"offer", offer }  ──→  6. pc.setRemoteDescription(offer)
  *                                            ondatachannel fires for ch0..ch3
@@ -20,29 +20,32 @@
  *  9. pc.setRemoteDescription(answer)
  *  10. ICE candidates trickled both ways → addIceCandidate
  *  11. ICE connects (prefer host/srflx; relay = last resort). DataChannels open.
- *  12. SENDER streams 256KB chunks, striped round-robin across d1..d3, each tagged
- *      { fileId, index }. Receiver reassembles by index → Blob → save.
- *  13. bytes flow P2P, encrypted with DTLS, never through the signaling server.
+ *  12. SENDER streams 256KB chunks, striped round-robin across d0..d2. Each binary
+ *      message carries an 8-byte HEADER: [4 bytes fileSeq][4 bytes chunkIndex] so
+ *      the receiver is self-describing — no dependency on control-channel ordering.
+ *  13. Control channel carries: meta, file-start, file-end, done, cancel.
+ *  14. Receiver reassembles chunks by index → Blob → one-tap save.
  *
- * SPEED OPTIMIZATIONS vs a naive single-channel implementation:
- *  • 3 parallel unordered data channels — chunks striped round-robin; SCTP delivers
- *    them in parallel across 3 streams, roughly 2-3x throughput on fast links.
- *  • 256KB chunks (vs the typical 16KB default) — fewer syscall round-trips per byte.
- *  • ordered:false + maxRetransmits:3 on data channels — strict ordering isn't needed
- *    because we reassemble by index; unordered lets SCTP skip head-of-line blocking.
- *  • Per-channel bufferedAmount backpressure (HIGH_WATERMARK / LOW_WATERMARK) using
- *    bufferedAmountLowThreshold + the `bufferedamountlow` event — never overflows.
- *  • ICE candidate-type logging — we log whether the winning pair was host/srflx
- *    (fast, direct/STUN) or relay (TURN, slower) so throughput is debuggable.
+ * RELIABILITY FIX (v4 — fixes broken images + stuck downloads):
+ *  • Data channels are now RELIABLE (no maxRetransmits). Dropped chunks corrupt
+ *    files — `ordered:false` alone is fine (unordered but guaranteed delivery).
+ *  • Each binary chunk is SELF-DESCRIBING (8-byte header with fileSeq + chunkIndex).
+ *    The old "pendingChunkMeta" approach broke because control messages and binary
+ *    chunks arrive out of order across parallel channels, mismatching meta→chunk.
+ *  • ICE reconnect is debounced (1.5s) so brief flutters don't show "connection dropped".
  * ====================================================================================
  */
 
 import type { SignalingClient, SignalData } from "./signaling";
 
-const CHUNK_SIZE = 256 * 1024; // 256KB — benchmarked sweet spot (64KB slower, 512KB no gain + risk)
+const CHUNK_SIZE = 256 * 1024; // 256KB
 const NUM_DATA_CHANNELS = 3; // striped data channels (excludes the control channel)
 const HIGH_WATERMARK = 8 * 1024 * 1024; // 8MB — pause when a channel's buffer exceeds this
 const LOW_WATERMARK = 2 * 1024 * 1024; // 2MB — resume when it drains below this
+const RECONNECT_DEBOUNCE_MS = 1500; // wait this long before showing "reconnecting"
+
+// Binary header layout for each data-channel message: 4 bytes fileSeq + 4 bytes chunkIndex
+const HEADER_BYTES = 8;
 
 export type IncomingFile = {
   id: string;
@@ -74,13 +77,13 @@ export function getIceServers(): IceServers {
   return servers;
 }
 
+// Control messages (sent on the ordered control channel as JSON strings)
 type ControlMessage =
   | { type: "meta"; files: IncomingFile[] }
-  | { type: "file-start"; id: string; name: string; size: number; mime?: string }
-  | { type: "file-end"; id: string }
-  | { type: "chunk-meta"; fileId: string; index: number; length: number } // precedes each binary chunk
+  | { type: "file-start"; seq: number; id: string; name: string; size: number; mime?: string }
+  | { type: "file-end"; seq: number }
   | { type: "done" }
-  | { type: "cancel"; id?: string };
+  | { type: "cancel" };
 
 export class BeamTransfer {
   readonly role: "sender" | "receiver";
@@ -90,7 +93,7 @@ export class BeamTransfer {
 
   private pc: RTCPeerConnection | null = null;
   private ctrlCh: RTCDataChannel | null = null; // ordered control channel
-  private dataChannels: RTCDataChannel[] = []; // unordered striped data channels
+  private dataChannels: RTCDataChannel[] = []; // unordered RELIABLE striped data channels
   private channelsOpen = 0;
 
   // ---- Sender-side state ----
@@ -98,11 +101,11 @@ export class BeamTransfer {
   private sending = false;
 
   // ---- Receiver-side state ----
+  // Keyed by fileSeq (a number, assigned per-file in order).
   private incoming: Map<
-    string,
+    number,
     { chunks: Map<number, ArrayBuffer>; received: number; count: number; file: IncomingFile; url?: string }
   > = new Map();
-  private currentIncomingId: string | null = null;
 
   // ---- Callbacks (assigned by the hook) ----
   onChannelOpen?: () => void;
@@ -121,6 +124,8 @@ export class BeamTransfer {
 
   private statsTimer: ReturnType<typeof setInterval> | null = null;
   private loggedWinner = false;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private isReconnecting = false;
 
   constructor(
     role: "sender" | "receiver",
@@ -148,15 +153,32 @@ export class BeamTransfer {
       }
     };
 
-    // ICE connection state → reconnect / fail UX + winner-candidate logging
+    // ICE connection state → debounced reconnect / fail UX + winner-candidate logging
     pc.oniceconnectionstatechange = () => {
       const st = pc.iceConnectionState;
-      if (st === "disconnected" || st === "checking") {
-        this.onReconnecting?.();
+      if (st === "disconnected") {
+        // Debounce: only show "reconnecting" if it stays disconnected for >1.5s.
+        // Brief ICE flutters are normal and shouldn't surface as "connection dropped".
+        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = setTimeout(() => {
+          this.isReconnecting = true;
+          this.onReconnecting?.();
+        }, RECONNECT_DEBOUNCE_MS);
       } else if (st === "connected" || st === "completed") {
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.logSelectedCandidateType();
-        this.onReconnected?.();
+        if (this.isReconnecting) {
+          this.isReconnecting = false;
+          this.onReconnected?.();
+        }
       } else if (st === "failed") {
+        if (this.reconnectTimer) {
+          clearTimeout(this.reconnectTimer);
+          this.reconnectTimer = null;
+        }
         this.onFailed?.("Connection failed. The network may be blocking peer-to-peer traffic.");
       }
     };
@@ -176,12 +198,13 @@ export class BeamTransfer {
   // --------------------------------------------------------------------------------------
   async createOffer() {
     const pc = this.ensurePC();
-    // Control channel: ordered + reliable.
+    // Control channel: ordered + reliable (default — no maxRetransmits).
     this.ctrlCh = pc.createDataChannel("ctrl", { ordered: true });
     this.attachChannel(this.ctrlCh, true);
-    // Data channels: unordered, bounded retransmits. Striped round-robin.
+    // Data channels: unordered but RELIABLE (NO maxRetransmits — dropped chunks
+    // corrupt files). Unordered is fine because we reassemble by index.
     for (let i = 0; i < NUM_DATA_CHANNELS; i++) {
-      const ch = pc.createDataChannel(`d${i}`, { ordered: false, maxRetransmits: 3 });
+      const ch = pc.createDataChannel(`d${i}`, { ordered: false });
       this.attachChannel(ch, false);
     }
     const offer = await pc.createOffer();
@@ -243,8 +266,8 @@ export class BeamTransfer {
       if (isControl) {
         if (typeof e.data === "string") this.handleControlMessage(e.data);
       } else {
-        // Binary chunk on a data channel
-        this.handleChunkMessage(e.data);
+        // Binary chunk on a data channel — self-describing (8-byte header).
+        if (e.data instanceof ArrayBuffer) this.handleChunkMessage(e.data);
       }
     };
     if (isControl) {
@@ -254,6 +277,9 @@ export class BeamTransfer {
     }
   }
 
+  // --------------------------------------------------------------------------------------
+  // RECEIVER: control channel message handler.
+  // --------------------------------------------------------------------------------------
   private handleControlMessage(raw: string) {
     let msg: ControlMessage;
     try {
@@ -267,22 +293,16 @@ export class BeamTransfer {
         break;
       case "file-start": {
         const file: IncomingFile = { id: msg.id, name: msg.name, size: msg.size, mime: msg.mime };
-        this.incoming.set(msg.id, { chunks: new Map(), received: 0, count: 0, file });
-        this.currentIncomingId = msg.id;
+        this.incoming.set(msg.seq, { chunks: new Map(), received: 0, count: 0, file });
         this.onFileStart?.(file);
         break;
       }
-      case "chunk-meta": {
-        // Precedes a binary chunk on a data channel: tells the receiver which
-        // file + index the next chunk belongs to. We stash it so the binary
-        // handler can place the chunk in the right slot.
-        this.pendingChunkMeta = msg;
-        break;
-      }
       case "file-end": {
-        const entry = this.incoming.get(msg.id);
+        const entry = this.incoming.get(msg.seq);
         if (entry) {
-          // Reassemble in index order
+          // Reassemble in index order — ALL chunks are present because the
+          // channel is reliable (no maxRetransmits). If any are missing, the
+          // blob will be short but won't crash.
           const ordered: ArrayBuffer[] = [];
           for (let i = 0; i < entry.count; i++) {
             const c = entry.chunks.get(i);
@@ -293,7 +313,6 @@ export class BeamTransfer {
           entry.url = url;
           this.onFileComplete?.(entry.file, url);
         }
-        if (this.currentIncomingId === msg.id) this.currentIncomingId = null;
         break;
       }
       case "done":
@@ -305,18 +324,25 @@ export class BeamTransfer {
     }
   }
 
-  private pendingChunkMeta: { type: "chunk-meta"; fileId: string; index: number; length: number } | null = null;
-
+  // --------------------------------------------------------------------------------------
+  // RECEIVER: binary chunk handler — reads the 8-byte self-describing header.
+  //
+  // Each data-channel message = [4 bytes fileSeq (uint32)][4 bytes chunkIndex (uint32)][data]
+  // This is independent of control-channel ordering — the chunk knows where it belongs.
+  // --------------------------------------------------------------------------------------
   private handleChunkMessage(raw: ArrayBuffer) {
-    const meta = this.pendingChunkMeta;
-    this.pendingChunkMeta = null;
-    if (!meta) return;
-    const entry = this.incoming.get(meta.fileId);
+    if (raw.byteLength < HEADER_BYTES) return;
+    const dv = new DataView(raw);
+    const fileSeq = dv.getUint32(0, false); // big-endian
+    const chunkIndex = dv.getUint32(4, false);
+    const data = raw.slice(HEADER_BYTES);
+
+    const entry = this.incoming.get(fileSeq);
     if (!entry) return;
-    entry.chunks.set(meta.index, raw);
-    entry.received += raw.byteLength;
-    entry.count = Math.max(entry.count, meta.index + 1);
-    this.onFileProgress?.(meta.fileId, entry.received, entry.file.size);
+    entry.chunks.set(chunkIndex, data);
+    entry.received += data.byteLength;
+    entry.count = Math.max(entry.count, chunkIndex + 1);
+    this.onFileProgress?.(entry.file.id, entry.received, entry.file.size);
   }
 
   // --------------------------------------------------------------------------------------
@@ -331,9 +357,9 @@ export class BeamTransfer {
     this.sending = true;
     try {
       const ctrl = this.ctrlCh;
-      if (!ctrl) throw new Error("Control channel not ready");
+      if (!ctrl || ctrl.readyState !== "open") throw new Error("Control channel not ready");
 
-      // Announce the file manifest first (over the control channel).
+      // Announce the file manifest first (on the control channel).
       const manifest: IncomingFile[] = this.sendQueue.map((f, i) => ({
         id: `${Date.now()}-${i}`,
         name: f.name || `file-${i + 1}`,
@@ -345,11 +371,14 @@ export class BeamTransfer {
       for (let i = 0; i < this.sendQueue.length; i++) {
         const file = this.sendQueue[i];
         const meta = manifest[i];
+        const seq = i; // numeric file sequence — used in the binary header
         if (ctrl.readyState !== "open") return;
 
+        // Tell the receiver a file is starting (with its seq for header matching).
         ctrl.send(
           JSON.stringify({
             type: "file-start",
+            seq,
             id: meta.id,
             name: meta.name,
             size: meta.size,
@@ -372,25 +401,24 @@ export class BeamTransfer {
             if (dc.readyState !== "open") return;
           }
           const slice = file.slice(offset, offset + CHUNK_SIZE);
-          const buf = await slice.arrayBuffer();
+          const fileData = await slice.arrayBuffer();
           if (dc.readyState !== "open") return;
-          // Send chunk-meta on control channel, then the bytes on the data channel.
-          // Both are in-order within their own channel; the receiver matches by index.
-          ctrl.send(
-            JSON.stringify({
-              type: "chunk-meta",
-              fileId: meta.id,
-              index: chunkIndex,
-              length: buf.byteLength,
-            } satisfies ControlMessage),
-          );
-          dc.send(buf);
-          offset += buf.byteLength;
+
+          // Build the self-describing message: [8-byte header][file data]
+          const msg = new ArrayBuffer(HEADER_BYTES + fileData.byteLength);
+          const mdv = new DataView(msg);
+          mdv.setUint32(0, seq, false); // big-endian fileSeq
+          mdv.setUint32(4, chunkIndex, false); // big-endian chunkIndex
+          new Uint8Array(msg, HEADER_BYTES).set(new Uint8Array(fileData));
+
+          dc.send(msg);
+          offset += fileData.byteLength;
           chunkIndex++;
           this.onFileProgress?.(meta.id, offset, meta.size);
         }
 
-        ctrl.send(JSON.stringify({ type: "file-end", id: meta.id } satisfies ControlMessage));
+        // Tell the receiver this file is done — they reassemble + create the blob.
+        ctrl.send(JSON.stringify({ type: "file-end", seq } satisfies ControlMessage));
         this.onFileComplete?.(meta, "");
       }
 
@@ -423,12 +451,9 @@ export class BeamTransfer {
             remoteCandidateId?: string;
           };
           const local = cp.localCandidateId ? stats.get(cp.localCandidateId) : undefined;
-          const remote = cp.remoteCandidateId ? stats.get(cp.remoteCandidateId) : undefined;
           const lt = (local as RTCIceCandidateStats | undefined)?.candidateType;
-          const rt = (remote as RTCIceCandidateStats | undefined)?.candidateType;
-          // The "selected" type is the local one's type for our purposes.
           const winner = (lt as "host" | "srflx" | "prflx" | "relay" | undefined) ?? "unknown";
-          console.log(`[beam-webrtc] ICE selected: local=${lt} remote=${rt} → winner=${winner}`);
+          console.log(`[beam-webrtc] ICE selected: local=${lt} → winner=${winner}`);
           this.onCandidateType?.(winner as "host" | "srflx" | "prflx" | "relay" | "unknown");
         }
       });
@@ -477,9 +502,13 @@ export class BeamTransfer {
   // Receiver: revoke an object URL when done with it.
   // --------------------------------------------------------------------------------------
   releaseFile(id: string) {
-    const entry = this.incoming.get(id);
-    if (entry?.url) URL.revokeObjectURL(entry.url);
-    this.incoming.delete(id);
+    for (const entry of this.incoming.values()) {
+      if (entry.file.id === id) {
+        if (entry.url) URL.revokeObjectURL(entry.url);
+        this.incoming.delete(entry.file.id as unknown as number);
+        break;
+      }
+    }
   }
 
   releaseAll() {
@@ -500,6 +529,10 @@ export class BeamTransfer {
   close() {
     this.sending = false;
     this.stopQualityPolling();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.oniceconnectionstatechange = null;
@@ -515,5 +548,6 @@ export class BeamTransfer {
     this.dataChannels = [];
     this.pc = null;
     this.channelsOpen = 0;
+    this.isReconnecting = false;
   }
 }

@@ -103,10 +103,28 @@ export function SenderPanel({
 
         {(phase === "waiting" || phase === "connected") && qrUrl && (
           <BeamStage active={phase === "waiting"}>
-            <div key="waiting" className="animate-beam-pop flex flex-col items-center px-6 py-7">
-              <BeamQR value={qrUrl} size={236} />
-              <p className="mt-4 text-center text-sm font-medium text-muted-foreground">
-                {storeMode ? "Scan to grab them — link's good for 5 min" : "Scan to grab them"}
+            <div key="waiting" className="animate-beam-pop flex flex-col items-center px-7 py-8">
+              {/* "Ready" badge above the QR */}
+              <div className="animate-beam-scale mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-secondary/60 px-3 py-1.5 text-xs font-bold text-foreground">
+                <span className="h-2 w-2 animate-beam-breathe rounded-full bg-primary" />
+                {storeMode ? "Stored & ready" : "Ready to scan"}
+              </div>
+              {/* QR code with a subtle blue glow ring */}
+              <div className="relative">
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -inset-3 rounded-[28px] opacity-30 blur-xl"
+                  style={{ background: "radial-gradient(circle, var(--brand) 0%, transparent 70%)" }}
+                />
+                <BeamQR value={qrUrl} size={232} className="relative" />
+              </div>
+              <p className="font-display mt-5 text-center text-[17px] font-bold text-foreground">
+                {storeMode ? "Scan to grab them" : "Point a phone camera here"}
+              </p>
+              <p className="mt-1.5 max-w-[28ch] text-center text-sm leading-relaxed text-muted-foreground">
+                {storeMode
+                  ? "Link's good for 5 min — or until they download"
+                  : "They'll connect straight to your device"}
               </p>
             </div>
           </BeamStage>
