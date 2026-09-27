@@ -103,6 +103,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const storeModeRef = useRef<boolean>(false);
   const speedRef = useRef({ lastTs: 0, lastBytes: 0, ema: 0 });
   const reconnectPrevPhase = useRef<Phase | null>(null);
+  // Stashed nearby target: when the user taps a nearby device before picking
+  // files, we store the target here, open the file picker, and auto-send to
+  // them once files are chosen (in beginSending).
+  const pendingNearbyRef = useRef<{ socketId: string; deviceLabel?: string } | null>(null);
 
   const patch = useCallback((p: Partial<SessionState>) => {
     setState((s) => ({ ...s, ...p }));
@@ -338,10 +342,21 @@ export function useBeamSession(sessionIdParam?: string | null) {
   }, [mode, sessionIdParam]);
 
   // ---- Sender actions ----
+  const sendToNearbyRef = useRef<((socketId: string, deviceLabel?: string) => void) | null>(null);
+
   const beginSending = useCallback(
     (files: File[]) => {
       if (files.length === 0) return;
       rawFilesRef.current = files;
+
+      // If the user tapped a nearby device before picking files, auto-send to
+      // them now (instead of showing the QR code).
+      const pending = pendingNearbyRef.current;
+      if (pending) {
+        pendingNearbyRef.current = null;
+        sendToNearbyRef.current?.(pending.socketId, pending.deviceLabel);
+        return;
+      }
 
       const items: FileItem[] = files.map((f, i) => ({
         id: `${Date.now()}-${i}`,
@@ -425,7 +440,17 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const sendToNearby = useCallback(
     (socketId: string, deviceLabel?: string) => {
       const files = rawFilesRef.current;
-      if (files.length === 0) return;
+      // If no files selected yet, open the file picker. Once the user picks
+      // files, beginSending() runs — but we stash the intended nearby target
+      // so we can auto-send to them right after.
+      if (files.length === 0) {
+        pendingNearbyRef.current = { socketId, deviceLabel };
+        if (typeof document !== "undefined") {
+          const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+          input?.click();
+        }
+        return;
+      }
       const lobby = lobbyRef.current;
       if (!lobby || !lobby.connected) {
         patch({ error: "Not connected to nearby discovery yet — try again in a moment." });
@@ -485,6 +510,8 @@ export function useBeamSession(sessionIdParam?: string | null) {
     },
     [patch],
   );
+  // Keep the ref current so beginSending can call it without a forward-ref issue.
+  sendToNearbyRef.current = sendToNearby;
 
   // ---- Path B receiver: download a single stored file (one-time-use) ----
   const downloadStored = useCallback(async (fileId: string) => {

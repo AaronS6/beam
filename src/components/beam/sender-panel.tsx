@@ -290,8 +290,10 @@ export function SenderPanel({
           </div>
         )}
 
-        {/* Nearby devices — tap one to send directly (no QR needed) */}
-        {(phase === "waiting" || phase === "connected") && !storeMode && (
+        {/* Nearby devices — tap one to send directly (no QR needed).
+            Shows whenever another device is on the Beam site, even before
+            you've picked files (idle). Only hidden in store mode. */}
+        {(phase === "idle" || phase === "waiting" || phase === "connected") && !storeMode && (
           <NearbyDevices nearby={nearby} onPick={onPickNearby} />
         )}
 

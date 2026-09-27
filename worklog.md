@@ -675,3 +675,22 @@ Work Log:
 Stage Summary:
 - The app is production-ready. Signaling client supports both sandbox mode (XTransformPort) and production mode (NEXT_PUBLIC_SIGNALING_URL).
 - Deploy guide written below for the user.
+
+---
+Task ID: nearby-only-when-on-site
+Agent: main (user: "when i mean send to someone nearby i mean only if they are on the website itself, then the button pops up")
+Task: Make the nearby button appear whenever another device is on the Beam site (even from idle, before picking files)
+
+Work Log:
+- The nearby list was already lobby-based (only devices with Beam open appear) — confirmed correct. The issue was it only rendered in the waiting phase (after file selection).
+- Changed the render condition in sender-panel.tsx: now shows in idle + waiting + connected (was waiting/connected only). The NearbyDevices component itself returns null when the list is empty, so the "send to someone nearby" header stays hidden when you're the only one on the site.
+- Added the ability to tap a nearby device FROM IDLE (before files are selected): sendToNearby now stashes the target in pendingNearbyRef + opens the file picker. Once files are chosen, beginSending checks for a pending nearby target and auto-sends to them (instead of showing the QR).
+- Used a sendToNearbyRef to break the circular useCallback dependency (beginSending calls sendToNearby which is defined later).
+
+E2E VERIFICATION (agent-browser):
+- Alone (1 tab): no "NEARBY" section renders. ✓
+- Two tabs: "OR SEND TO SOMEONE NEARBY" + device chip appears on tab1. ✓
+- Tap nearby from idle (no files): file picker opens → pick a file → auto-sends directly (no QR) → sender "All sent", receiver "All yours" 100%. Zero errors. ✓
+
+Stage Summary:
+- The nearby button now pops up the moment another device opens the Beam site, even on the idle screen before you've picked files. Tap → file picker → sends straight to them.
