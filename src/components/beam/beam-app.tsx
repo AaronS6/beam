@@ -111,7 +111,7 @@ export function BeamApp() {
               <span className="h-1.5 w-1.5 animate-beam-breathe rounded-full bg-primary" />
               Files that go straight from you to them
             </p>
-            <h1 className="text-balance text-[40px] font-extrabold leading-[1.02] tracking-tight text-foreground sm:text-[56px] lg:text-[68px]">
+            <h1 className="font-display text-balance text-[42px] font-extrabold leading-[1.0] tracking-tight text-foreground sm:text-[58px] lg:text-[72px]">
               Just drop your files<br className="hidden sm:block" /> and{" "}
               <span className="text-beam-animate">scan.</span>
             </h1>

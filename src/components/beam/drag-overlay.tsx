@@ -91,7 +91,7 @@ export function DragOverlay({ onFiles }: { onFiles: (files: File[]) => void }) {
         <div className="animate-beam-wiggle flex h-24 w-24 items-center justify-center rounded-3xl bg-white shadow-2xl">
           <UploadCloud className="h-12 w-12 text-primary" strokeWidth={1.75} />
         </div>
-        <p className="mt-6 text-2xl font-bold text-white drop-shadow-sm">
+        <p className="font-display mt-6 text-2xl font-bold text-white drop-shadow-sm">
           Drop them anywhere
         </p>
         <p className="mt-1 text-sm font-medium text-white/80">

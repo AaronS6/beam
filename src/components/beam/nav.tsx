@@ -27,7 +27,7 @@ export function Nav() {
                 <path d="M 24.5 32 Q 32 18.5 39.5 32" opacity="0.5" />
               </g>
             </svg>
-            <span className="text-[17px] font-bold tracking-tight text-foreground">Beam</span>
+            <span className="font-display text-[18px] font-bold tracking-tight text-foreground">Beam</span>
           </span>
         </a>
         <div className="flex items-center gap-1 sm:gap-1.5">

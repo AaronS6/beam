@@ -143,7 +143,7 @@ export function SenderPanel({
                 <WifiOff className="h-10 w-10 text-muted-foreground" strokeWidth={1.5} />
                 <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
               </div>
-              <p className="mt-5 text-[17px] font-semibold text-foreground">Reconnecting…</p>
+              <p className="font-display mt-5 text-[22px] font-bold text-foreground">Reconnecting…</p>
               <p className="mt-1 text-center text-sm text-muted-foreground">
                 The connection dipped. Hang on — it usually comes back.
               </p>
@@ -159,7 +159,7 @@ export function SenderPanel({
                   <path d="M12 24.5 L20.5 33 L36 16" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="animate-beam-check" />
                 </svg>
               </div>
-              <p className="mt-5 text-[22px] font-bold text-foreground">All sent</p>
+              <p className="font-display mt-5 text-[24px] font-bold text-foreground">All sent</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {files.length} {files.length === 1 ? "file" : "files"} · {formatBytes(totalBytes)}
               </p>
@@ -174,7 +174,7 @@ export function SenderPanel({
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-secondary">
                 <AlertCircle className="h-8 w-8 text-destructive" strokeWidth={1.75} />
               </div>
-              <p className="mt-5 text-[18px] font-semibold text-foreground">
+              <p className="font-display mt-5 text-[20px] font-bold text-foreground">
                 {state.error ? "Hmm, that stopped" : "Something interrupted the transfer"}
               </p>
               {state.error && <p className="mt-1 max-w-[30ch] text-sm text-muted-foreground">{state.error}</p>}
@@ -188,7 +188,7 @@ export function SenderPanel({
               <div className="flex h-16 w-16 items-center justify-center rounded-full bg-secondary">
                 <Clock className="h-8 w-8 text-muted-foreground" strokeWidth={1.75} />
               </div>
-              <p className="mt-5 text-[18px] font-semibold text-foreground">Link expired</p>
+              <p className="font-display mt-5 text-[20px] font-bold text-foreground">Link expired</p>
               <p className="mt-1 max-w-[30ch] text-sm text-muted-foreground">
                 {storeMode ? "The 5 minutes ran out — files are deleted for good." : "Nobody connected in time. Start fresh?"}
               </p>

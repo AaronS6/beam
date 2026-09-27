@@ -78,7 +78,7 @@ export function ReceiverPanel({
               <Loader2 className="h-9 w-9 animate-spin text-muted-foreground" strokeWidth={1.5} />
               <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
             </div>
-            <p className="mt-6 text-[18px] font-semibold text-foreground">Connecting…</p>
+            <p className="font-display mt-6 text-[18px] font-bold text-foreground">Connecting…</p>
             <p className="mt-1 text-center text-sm text-muted-foreground">
               Linking up with {peerDevice?.label ?? "the sender"}
             </p>
@@ -96,7 +96,7 @@ export function ReceiverPanel({
             <div className="flex h-16 w-16 items-center justify-center rounded-full bg-secondary">
               <Clock className="h-8 w-8 text-muted-foreground" strokeWidth={1.75} />
             </div>
-            <p className="mt-5 text-[20px] font-bold text-foreground">This link's gone</p>
+            <p className="font-display mt-5 text-[22px] font-bold text-foreground">This link's gone</p>
             <p className="mt-1.5 max-w-[32ch] text-sm text-muted-foreground">
               {storeMode ? "The 5 minutes are up — files are deleted for good." : "Ask the sender to whip up a new QR code and try again."}
             </p>
@@ -122,7 +122,7 @@ export function ReceiverPanel({
           <Smartphone className="h-6 w-6" strokeWidth={1.75} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-[18px] font-bold text-foreground">
+          <p className="font-display text-[19px] font-bold text-foreground">
             {phase === "done" ? "All yours" : storeMode ? "Grab your files" : "Receiving files"}
           </p>
           <p className="truncate text-sm text-muted-foreground">
@@ -190,7 +190,7 @@ export function ReceiverPanel({
         <div className="mb-4 flex items-start gap-3 rounded-2xl border border-destructive/30 bg-destructive/5 px-4 py-3">
           <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" strokeWidth={1.75} />
           <div>
-            <p className="text-sm font-semibold text-foreground">Transfer interrupted</p>
+            <p className="font-display text-sm font-bold text-foreground">Transfer interrupted</p>
             {state.error && <p className="mt-0.5 text-sm text-muted-foreground">{state.error}</p>}
           </div>
         </div>

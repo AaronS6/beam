@@ -28,7 +28,7 @@ export function HowItWorks() {
   return (
     <section id="how-it-works" className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
       <div className="mb-12 sm:mb-16">
-        <h2 className="text-[30px] font-bold leading-tight tracking-tight text-foreground sm:text-[40px]">
+        <h2 className="font-display text-[32px] font-bold leading-tight tracking-tight text-foreground sm:text-[44px]">
           Three steps. No sign-up, no fuss.
         </h2>
         <p className="mt-3 max-w-[52ch] text-[17px] leading-relaxed text-muted-foreground">
@@ -48,7 +48,7 @@ export function HowItWorks() {
               </span>
               <span className="text-sm font-semibold tabular-nums text-muted-foreground/50">{s.n}</span>
             </div>
-            <h3 className="text-xl font-bold text-foreground">{s.title}</h3>
+            <h3 className="font-display text-xl font-bold text-foreground">{s.title}</h3>
             <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{s.body}</p>
           </div>
         ))}
@@ -65,7 +65,7 @@ export function Privacy() {
           <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-beam text-white">
             <ShieldCheck className="h-6 w-6" strokeWidth={1.75} />
           </div>
-          <h2 className="text-[30px] font-bold leading-tight tracking-tight text-foreground sm:text-[40px]">
+          <h2 className="font-display text-[32px] font-bold leading-tight tracking-tight text-foreground sm:text-[44px]">
             Your files don't pass through us.
           </h2>
           <p className="mt-4 max-w-[52ch] text-[17px] leading-relaxed text-muted-foreground">

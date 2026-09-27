@@ -51,7 +51,10 @@
 
 :root {
   /* System font — friendly, humanist. */
-  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", system-ui, sans-serif;
+  /* Real fonts loaded via next/font in layout.tsx (Inter + Bricolage Grotesque).
+     Fallbacks cover any flash before the webfonts swap in. */
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+  --font-display: var(--font-bricolage), var(--font-inter), -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
 
   /* Generous radius — 24px on the main card, 16px on buttons/chips */
@@ -112,8 +115,8 @@
   body {
     @apply bg-background text-foreground;
     font-family: var(--font-sans);
-    font-feature-settings: "cv02", "cv03", "cv11";
-    letter-spacing: -0.01em;
+    font-feature-settings: "cv11", "ss01", "ss03";
+    letter-spacing: -0.011em;
   }
   /* Soft focus ring — coral, never remove focus indication */
   :focus-visible {
@@ -322,4 +325,14 @@
     transition-duration: 0.001ms !important;
     scroll-behavior: auto !important;
   }
+}
+
+/* ============================================================
+   Display face — Bricolage Grotesque on headlines.
+   Tailwind v4 @utility so it's emitted + wins over base font-family.
+   ============================================================ */
+@utility font-display {
+  font-family: var(--font-display), var(--font-sans);
+  letter-spacing: -0.025em;
+  font-feature-settings: "ss01";
 }

@@ -79,7 +79,7 @@ export function FileComposer({
       </div>
 
       {/* Headline + subcopy */}
-      <h2 className="text-center text-[22px] font-bold tracking-tight text-foreground">
+      <h2 className="font-display text-center text-[24px] font-bold tracking-tight text-foreground">
         {mode === "files" ? "Pick your files" : "Type something to send"}
       </h2>
       <p className="mx-auto mt-1.5 max-w-[30ch] text-center text-sm leading-relaxed text-muted-foreground">

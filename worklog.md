@@ -451,3 +451,32 @@ Stage Summary:
 - Cloud icon no longer floats — static.
 - Palette rebuilt to WeTransfer-style dark charcoal + single coral accent (not the bright coral page, not the brown).
 - All coral-bg white-text assumptions cleaned up across nav/hero/sections/footer/sender-panel.
+
+---
+Task ID: better-typography
+Agent: main (user: "use a better looking text style")
+Task: Upgrade typography from generic system font to a proper font pairing
+
+Work Log:
+- Was: generic system font stack (-apple-system / SF Pro / Inter fallback). Functional but generic — no personality.
+- Now: a proper two-font pairing loaded via next/font/google (no package install needed):
+  - **Inter** (400/500/600/700) for body text — clean, premium, high x-height, excellent legibility. Loaded with `variable: "--font-inter"`, `display: "swap"`.
+  - **Bricolage Grotesque** (600/700/800) for headlines — a characterful display face: geometric but warm, slightly quirky terminals, gives the hero personality without being cartoonish. Pairs beautifully with Inter. Loaded with `variable: "--font-bricolage"`, `display: "swap"`.
+
+WIRING:
+- layout.tsx: imported Inter + Bricolage_Grotesque from next/font/google. The font CSS variables are applied to the <html> element (NOT <body>) so they cascade above next-themes' `dark` class — `className={`${inter.variable} ${bricolage.variable}`}` on <html>. (Initial attempt put them on <body> which meant the variables didn't reach the html root where globals.css :root references them — fixed.)
+- globals.css: --font-sans now chains `var(--font-inter)` first; added --font-display chaining `var(--font-bricolage), var(--font-inter), ...fallbacks`. body uses var(--font-sans) with refined feature-settings ("cv11","ss01","ss03") + tighter letter-spacing (-0.011em).
+- Added a `.font-display` Tailwind v4 custom utility via `@utility font-display { font-family: var(--font-display), var(--font-sans); letter-spacing: -0.025em; font-feature-settings: "ss01"; }`. (Plain `.font-display {}` CSS and `@layer utilities` versions were both silently purged by Tailwind v4 — `@utility` is the v4-correct way to register a custom utility so it's emitted + wins over base font-family.)
+- Applied `font-display` class to all headlines: hero h1, section h2s + step h3s, card "Pick your files", sender states (All sent / Reconnecting / Link expired / Transfer stopped), receiver states (Connecting / This link's gone / All yours / Transfer interrupted), nav "Beam" wordmark, drag overlay "Drop them anywhere".
+- Increased hero h1 scale slightly (42→58→72px) and tightened leading (1.0) for a bolder display look.
+
+E2E VERIFICATION (agent-browser):
+- Fonts load: html class = "inter_..._variable bricolage_..._variable dark". body font-family = "Inter, Inter Fallback, ...". h1 font-family = "Bricolage Grotesque, Bricolage Grotesque Fallback, ...".
+- VLM confirms: headline uses "a bold, characterful display font… geometric yet warm, subtle quirks that give it personality… tight spacing"; body is "clean, highly legible… Inter"; vibe "evokes the WeTransfer aesthetic… Premium, Modern, Human"; contrast "strong and effective — scale, weight, and personality differentiation".
+- Transfer still works end-to-end after the font change (All yours, 100%, zero errors).
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- Replaced generic system-font typography with a proper Inter + Bricolage Grotesque pairing.
+- Files modified: src/app/layout.tsx (next/font wiring), src/app/globals.css (font vars + @utility font-display), src/components/beam/{beam-app,sections,file-composer,sender-panel,receiver-panel,nav,drag-overlay}.tsx (font-display class on headlines).
+- Key gotcha solved: Tailwind v4 purges plain CSS custom classes + @layer utilities custom classes — must use `@utility` directive.
