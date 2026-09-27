@@ -44,6 +44,9 @@ export function Nav() {
           >
             Privacy
           </a>
+          <span className="ml-1 hidden text-[10px] font-medium text-muted-foreground/50 sm:inline">
+            made by Aaron Shan
+          </span>
         </div>
       </nav>
     </header>

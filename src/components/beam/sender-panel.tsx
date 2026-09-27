@@ -25,6 +25,7 @@ import { PathCountdown } from "./path-countdown";
 import { CandidateBadge } from "./candidate-badge";
 import { QualityBars } from "./quality-bars";
 import { TransferSummary } from "./transfer-summary";
+import { NearbyDevices } from "./nearby-devices";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
@@ -39,6 +40,7 @@ export function SenderPanel({
   onReorderFiles,
   onPasteText,
   onToggleStoreMode,
+  onPickNearby,
 }: {
   state: SessionState;
   onFiles: (files: File[]) => void;
@@ -50,10 +52,11 @@ export function SenderPanel({
   onReorderFiles: (fromId: string, toId: string) => void;
   onPasteText: (text: string) => void;
   onToggleStoreMode: (v: boolean) => void;
+  onPickNearby: (socketId: string, label: string) => void;
 }) {
   const {
     phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice,
-    createdAt, quality, candidateType, storeMode, storeExpiresAt,
+    createdAt, quality, candidateType, storeMode, storeExpiresAt, nearby,
   } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
@@ -285,6 +288,11 @@ export function SenderPanel({
               onChange={(e) => { handleAddMore(e.target.files); e.target.value = ""; }}
             />
           </div>
+        )}
+
+        {/* Nearby devices — tap one to send directly (no QR needed) */}
+        {(phase === "waiting" || phase === "connected") && !storeMode && (
+          <NearbyDevices nearby={nearby} onPick={onPickNearby} />
         )}
 
         {/* Actions */}

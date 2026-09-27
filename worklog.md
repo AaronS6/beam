@@ -630,3 +630,33 @@ Stage Summary:
 - Hardened waitForLowBuffer with a 5s timeout + close-detection (can't hang forever).
 - Receiver finalization now waits for all expected chunks before reassembling (handles unordered-channel race).
 - Files modified: src/lib/webrtc.ts only.
+
+---
+Task ID: nearby-devices-and-credit
+Agent: main (user: "make it able to search for devices nearby to drop to... press on that persons name and it sends... also show made by Aaron Shan on the top bar, very small")
+Task: Nearby device discovery + tap-to-send + "made by Aaron Shan" credit
+
+NEARBY DEVICE FEATURE — full stack:
+1. Signaling server (mini-services/signaling-server/index.ts): added a LOBBY presence layer.
+   - `join-lobby { device }`: socket joins the "lobby" room, gets back `lobby-list { devices: [...] }` (everyone else currently online), and the server broadcasts `lobby-update { kind: "join", socketId, device }` to all other lobby members.
+   - `leave-lobby`: leaves the lobby + broadcasts `lobby-update { kind: "leave" }`.
+   - `invite { to, sessionId, device, files }`: relays an `invite` to a specific nearby socket. The invitee's client auto-joins the session via the existing `join-session` flow.
+   - On disconnect: if the socket was in the lobby, broadcasts `lobby-update { kind: "leave" }` so others remove it from their nearby list.
+2. Signaling client (src/lib/signaling.ts): added `NearbyDevice` + `InvitePayload` types, `onLobbyList` / `onLobbyUpdate` / `onInvite` callbacks, and `joinLobby()` / `leaveLobby()` / `invite()` methods.
+3. Hook (src/hooks/use-beam-session.ts): added a SEPARATE lobby SignalingClient (so it survives across session lifecycle changes). On mount it joins the lobby + maintains a `nearby[]` state list. Handles `onInvite` — when invited, transitions to receiver mode + joins the sender's session. Added `sendToNearby(socketId, label)` action — creates a session via the lobby socket, invites the target, and when they join (peer-joined), runs the WebRTC offer flow exactly like the QR path.
+4. New component (src/components/beam/nearby-devices.tsx): renders a "Or send to someone nearby" list of tappable device chips (with device-type icons: phone/laptop/monitor/tablet). Tap one → calls `sendToNearby`.
+5. SenderPanel: renders `<NearbyDevices>` below the file list in the waiting state (Path A only — not shown in store mode since there's no live peer).
+
+CREDIT:
+- nav.tsx: added `<span className="ml-1 hidden text-[10px] font-medium text-muted-foreground/50 sm:inline">made by Aaron Shan</span>` in the top bar. Very small (10px), muted (50% opacity), desktop-only.
+
+E2E VERIFICATION (agent-browser):
+- Two tabs open: sender sees "OR SEND TO SOMEONE NEARBY" + a device chip "Linux desktop · Chrome". The nearby list populates from the lobby presence.
+- Tap the chip → sender creates a session, invites the device, the invitee auto-joins → WebRTC offer/answer/ICE completes → file transfers P2P. Sender: "All sent". Receiver: "All yours" + nb.txt 100%. Zero console errors.
+- "made by Aaron Shan" confirmed present in the nav (small, muted).
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- Nearby device discovery ships end-to-end: lobby presence + invite + auto-join + existing WebRTC transfer. Three ways to send now: QR code, copy link, OR tap a nearby device name.
+- "made by Aaron Shan" added to the top bar (tiny, muted).
+- Files: mini-services/signaling-server/index.ts (lobby + invite + disconnect cleanup), src/lib/signaling.ts (types + methods), src/hooks/use-beam-session.ts (lobby effect + sendToNearby + nearby state), src/components/beam/nearby-devices.tsx (new), src/components/beam/{sender-panel,beam-app,nav}.tsx.

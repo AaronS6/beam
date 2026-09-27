@@ -59,6 +59,8 @@ export type SessionState = {
   storeMode: boolean; // Path B toggle
   /** Path B: epoch ms when stored files expire (createdAt + 5 min). Null on Path A. */
   storeExpiresAt: number | null;
+  /** Nearby devices seen via the lobby (presence). Sender can tap one to send. */
+  nearby: { socketId: string; label: string; short: string }[];
 };
 
 const INITIAL: SessionState = {
@@ -80,6 +82,7 @@ const INITIAL: SessionState = {
   candidateType: null,
   storeMode: false,
   storeExpiresAt: null,
+  nearby: [],
 };
 
 export function useBeamSession(sessionIdParam?: string | null) {
@@ -93,6 +96,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
   });
 
   const signalingRef = useRef<SignalingClient | null>(null);
+  const lobbyRef = useRef<SignalingClient | null>(null);
   const transferRef = useRef<BeamTransfer | null>(null);
   const rawFilesRef = useRef<File[]>([]);
   const sessionIdRef = useRef<string | null>(mode === "receiver" ? sessionIdParam ?? null : null);
@@ -111,6 +115,95 @@ export function useBeamSession(sessionIdParam?: string | null) {
 
   const setStoreMode = useCallback((v: boolean) => {
     patch({ storeMode: v });
+  }, [patch]);
+
+  // ---- Lobby / nearby-device presence ----
+  // Every device (sender OR receiver) joins the lobby so others can discover
+  // it. The lobby client is separate from the session signaling client so it
+  // can stay alive across session lifecycle changes.
+  useEffect(() => {
+    const lobby = new SignalingClient();
+    lobbyRef.current = lobby;
+    lobby.onConnect = () => lobby.joinLobby(deviceInfo());
+    lobby.onLobbyList = (devices) => {
+      setState((s) => ({
+        ...s,
+        nearby: devices.map((d) => ({
+          socketId: d.socketId,
+          label: d.device.name ?? "a device",
+          short: d.device.platform ?? "",
+        })),
+      }));
+    };
+    lobby.onLobbyUpdate = (evt) => {
+      setState((s) => {
+        if (evt.kind === "join") {
+          // Avoid duplicates.
+          if (s.nearby.some((n) => n.socketId === evt.socketId)) return s;
+          return {
+            ...s,
+            nearby: [
+              ...s.nearby,
+              {
+                socketId: evt.socketId,
+                label: evt.device?.name ?? "a device",
+                short: evt.device?.platform ?? "",
+              },
+            ],
+          };
+        }
+        return { ...s, nearby: s.nearby.filter((n) => n.socketId !== evt.socketId) };
+      });
+    };
+    lobby.onInvite = (payload) => {
+      // A nearby sender picked THIS device to receive files. Auto-accept:
+      // join their session via the existing Path A receiver flow.
+      const sid = payload.sessionId;
+      const inviter = payload.device?.name ?? "a device";
+      setState((s) => ({
+        ...s,
+        mode: "receiver" as const,
+        sessionId: sid,
+        peerDevice: { label: inviter, short: payload.device?.platform ?? "" },
+        phase: "waiting" as const,
+        files: (payload.files ?? []).map((f, i) => ({
+          id: `inv-${i}`,
+          name: f.name,
+          size: f.size,
+          mime: f.mime,
+          received: 0,
+          status: "queued" as const,
+        })),
+        totalBytes: (payload.files ?? []).reduce((a, b) => a + b.size, 0),
+        receivedBytes: 0,
+        error: null,
+      }));
+      // Use the SAME lobby client to join the session (reuse the socket).
+      lobby.joinSession(sid, deviceInfo());
+      lobby.onSessionJoined = ({ sender }) => {
+        patch({ phase: "waiting", peerDevice: sender?.name ? { label: sender.name, short: sender.platform ?? "" } : null });
+      };
+      lobby.onSignal = (sigdata) => {
+        let transfer = transferRef.current;
+        if (!transfer) {
+          transfer = makeTransfer("receiver", sid, lobby, patch, setState, reconnectPrevPhase);
+          transferRef.current = transfer;
+        }
+        void transfer.handleSignal(sigdata);
+      };
+      lobby.onPeerLeft = () => {
+        setState((s) =>
+          s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
+        );
+      };
+      lobby.onSessionExpired = () => patch({ phase: "expired" });
+      lobby.onError = (msg) => patch({ error: msg });
+    };
+    return () => {
+      lobby.leaveLobby();
+      lobby.disconnect();
+      lobbyRef.current = null;
+    };
   }, [patch]);
 
   // ---- Speed sampler (tracks peak too) ----
@@ -321,6 +414,74 @@ export function useBeamSession(sessionIdParam?: string | null) {
       signaling.onSessionExpired = () => patch({ phase: "expired" });
       signaling.onError = (msg) => patch({ error: msg });
       void getIceServers;
+    },
+    [patch],
+  );
+
+  /** Sender: pick a nearby device (by socketId) to send the selected files to.
+   *  Creates a session + sends an invite; when the invitee joins, the WebRTC
+   *  offer flow runs just like the QR path. The files must already be selected
+   *  (in rawFilesRef) before calling this. */
+  const sendToNearby = useCallback(
+    (socketId: string, deviceLabel?: string) => {
+      const files = rawFilesRef.current;
+      if (files.length === 0) return;
+      const lobby = lobbyRef.current;
+      if (!lobby || !lobby.connected) {
+        patch({ error: "Not connected to nearby discovery yet — try again in a moment." });
+        return;
+      }
+      const sessionId = genSessionId();
+      sessionIdRef.current = sessionId;
+      const now = Date.now();
+      const items: FileItem[] = files.map((f, i) => ({
+        id: `${now}-${i}`,
+        name: f.name || `file-${i + 1}`,
+        size: f.size,
+        mime: f.type || undefined,
+        received: 0,
+        status: "queued",
+        imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
+      }));
+      const total = items.reduce((a, b) => a + b.size, 0);
+      patch({
+        sessionId,
+        qrUrl: null, // no QR for nearby send
+        files: items,
+        totalBytes: total,
+        receivedBytes: 0,
+        phase: "waiting",
+        error: null,
+        createdAt: now,
+        peerDevice: deviceLabel ? { label: deviceLabel, short: "" } : null,
+        storeExpiresAt: null,
+      });
+      // Wire the lobby client as the session signaling transport.
+      transferRef.current?.close();
+      transferRef.current = null;
+      lobby.onSessionCreated = () => {
+        // Now invite the target device — they'll join-session on receipt.
+        lobby.invite(socketId, sessionId, deviceInfo(), items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })));
+      };
+      lobby.onPeerJoined = ({ receiver }) => {
+        patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
+        const transfer = makeTransfer("sender", sessionId, lobby, patch, setState, reconnectPrevPhase);
+        transfer.queueFiles(rawFilesRef.current);
+        transferRef.current = transfer;
+        void transfer.createOffer();
+      };
+      lobby.onSignal = (data) => transferRef.current?.handleSignal(data);
+      lobby.onPeerLeft = () => {
+        setState((s) =>
+          s.phase === "done"
+            ? s
+            : { ...s, phase: "error", error: "The other device disconnected before the transfer finished." },
+        );
+      };
+      lobby.onSessionExpired = () => patch({ phase: "expired" });
+      lobby.onError = (msg) => patch({ error: msg });
+      // Create the session via the lobby socket.
+      lobby.createSession(sessionId, deviceInfo());
     },
     [patch],
   );
@@ -563,6 +724,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
     () => ({
       state,
       beginSending,
+      sendToNearby,
       reset,
       cancel,
       saveFile,
@@ -578,7 +740,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       downloadStored,
     }),
     [
-      state, beginSending, reset, cancel, saveFile, shareImage, shareAll, copyAllText,
+      state, beginSending, sendToNearby, reset, cancel, saveFile, shareImage, shareAll, copyAllText,
       copyLink, removeFile, addMoreFiles, reorderFiles, sendPastedText, setStoreMode, downloadStored,
     ],
   );

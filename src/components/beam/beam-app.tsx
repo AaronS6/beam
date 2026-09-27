@@ -17,6 +17,7 @@ export function BeamApp() {
   const {
     state,
     beginSending,
+    sendToNearby,
     reset,
     cancel,
     saveFile,
@@ -133,6 +134,7 @@ export function BeamApp() {
                 onReorderFiles={reorderFiles}
                 onPasteText={sendPastedText}
                 onToggleStoreMode={setStoreMode}
+                onPickNearby={sendToNearby}
               />
             </div>
           </div>

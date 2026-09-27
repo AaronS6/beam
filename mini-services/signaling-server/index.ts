@@ -441,9 +441,104 @@ io.on("connection", (socket) => {
     }
   });
 
+  // ---- LOBBY / NEARBY DEVICES -----------------------------------------
+  // A presence layer separate from sessions. Every connected device that
+  // isn't mid-transfer joins the "lobby" room and broadcasts its device
+  // info. Other lobby members see it as "nearby" and can tap it to send.
+  //
+  //   join-lobby { device }       → server adds socket to the lobby room,
+  //                                 replies lobby-list { devices: [...] },
+  //                                 and broadcasts lobby-update to all
+  //                                 other lobby members.
+  //   invite { sessionId, to, device, files }
+  //                              → server relays `invite` to the target
+  //                                 socket. The target auto-joins the
+  //                                 session via the existing join-session
+  //                                 flow (no new transport needed).
+  //
+  // On disconnect (below) or leave-lobby, the socket leaves the lobby and
+  // a lobby-update is broadcast so others remove it from their nearby list.
+  socket.on("join-lobby", (payload: any) => {
+    try {
+      const device = (payload?.device ?? {}) as DeviceInfo;
+      socket.join("lobby");
+      socket.data.lobbyDevice = device; // stashed for lobby-list + leave
+      console.log(
+        `[signaling] join-lobby socket=${socket.id} device=${device.name ?? "-"}`,
+      );
+      // Send this socket the current lobby roster (everyone except itself).
+      const roster: { socketId: string; device: DeviceInfo }[] = [];
+      for (const [sid, s] of io.sockets.sockets) {
+        if (sid === socket.id) continue;
+        if (s.data.lobbyDevice) {
+          roster.push({ socketId: sid, device: s.data.lobbyDevice });
+        }
+      }
+      socket.emit("lobby-list", { devices: roster });
+      // Tell everyone else this device just appeared.
+      socket.to("lobby").emit("lobby-update", {
+        kind: "join",
+        socketId: socket.id,
+        device,
+      });
+    } catch (err) {
+      console.error("[signaling] join-lobby error", err);
+    }
+  });
+
+  socket.on("leave-lobby", () => {
+    if (socket.data.lobbyDevice) {
+      socket.leave("lobby");
+      socket.to("lobby").emit("lobby-update", {
+        kind: "leave",
+        socketId: socket.id,
+      });
+      socket.data.lobbyDevice = undefined;
+    }
+  });
+
+  // invite: a sender picks a nearby device by socketId to send to.
+  // Server relays the invite to the target; the target's client calls
+  // join-session(sessionId) on receipt → existing flow takes over.
+  socket.on("invite", (payload: any) => {
+    try {
+      const to = String(payload?.to ?? "").trim();
+      const sessionId = String(payload?.sessionId ?? "").trim();
+      const device = (payload?.device ?? {}) as DeviceInfo;
+      const files = payload?.files;
+      if (!to || !sessionId) {
+        socket.emit("error", { message: "invite requires `to` and `sessionId`" });
+        return;
+      }
+      const target = io.sockets.sockets.get(to);
+      if (!target) {
+        socket.emit("error", { message: "That device isn't online anymore" });
+        return;
+      }
+      console.log(
+        `[signaling] invite sessionId=${sessionId} from=${socket.id} to=${to}`,
+      );
+      emitTo(to, "invite", {
+        sessionId,
+        from: socket.id,
+        device,
+        files,
+      });
+    } catch (err) {
+      console.error("[signaling] invite error", err);
+    }
+  });
+
   // ---- disconnect ------------------------------------------------------
   socket.on("disconnect", (reason) => {
     console.log(`[signaling] disconnect socket=${socket.id} reason=${reason}`);
+    // Lobby cleanup: tell others this device is gone.
+    if (socket.data.lobbyDevice) {
+      socket.to("lobby").emit("lobby-update", {
+        kind: "leave",
+        socketId: socket.id,
+      });
+    }
     const set = socketToSessions.get(socket.id);
     if (!set) return;
     for (const sessionId of set) {

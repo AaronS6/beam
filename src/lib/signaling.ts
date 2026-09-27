@@ -18,6 +18,18 @@ export type DeviceInfo = {
   platform?: string;
 };
 
+export type NearbyDevice = {
+  socketId: string;
+  device: DeviceInfo;
+};
+
+export type InvitePayload = {
+  sessionId: string;
+  from: string;
+  device: DeviceInfo;
+  files?: { name: string; size: number; mime?: string }[];
+};
+
 export type SignalData =
   | { kind: "offer"; payload: RTCSessionDescriptionInit }
   | { kind: "answer"; payload: RTCSessionDescriptionInit }
@@ -38,6 +50,10 @@ export class SignalingClient {
   onSignal?: (data: SignalData) => void;
   onSessionExpired?: () => void;
   onError?: (message: string) => void;
+  // Lobby / nearby-device callbacks
+  onLobbyList?: (devices: NearbyDevice[]) => void;
+  onLobbyUpdate?: (event: { kind: "join" | "leave"; socketId: string; device?: DeviceInfo }) => void;
+  onInvite?: (payload: InvitePayload) => void;
 
   constructor() {
     // Caddy gateway: path "/" + ?XTransformPort=3003 routes to the signaling server.
@@ -66,6 +82,12 @@ export class SignalingClient {
     this.socket.on("session-expired", () => this.onSessionExpired?.());
     this.socket.on("signal", (p: { data: SignalData }) => this.onSignal?.(p.data));
     this.socket.on("error", (p: { message: string }) => this.onError?.(p.message));
+    // Lobby events
+    this.socket.on("lobby-list", (p: { devices: NearbyDevice[] }) => this.onLobbyList?.(p.devices));
+    this.socket.on("lobby-update", (p: { kind: "join" | "leave"; socketId: string; device?: DeviceInfo }) =>
+      this.onLobbyUpdate?.(p),
+    );
+    this.socket.on("invite", (p: InvitePayload) => this.onInvite?.(p));
   }
 
   get connected() {
@@ -89,6 +111,22 @@ export class SignalingClient {
 
   leaveSession(sessionId: string) {
     this.socket.emit("leave-session", { sessionId });
+  }
+
+  /** Join the nearby-devices lobby. Others will see this device; this device
+   *  gets back the current roster via `onLobbyList`. */
+  joinLobby(device: DeviceInfo) {
+    this.socket.emit("join-lobby", { device });
+  }
+
+  leaveLobby() {
+    this.socket.emit("leave-lobby", {});
+  }
+
+  /** Sender: invite a specific nearby device (by socketId) to receive files.
+   *  The target's `onInvite` fires; they call joinSession(sessionId). */
+  invite(toSocketId: string, sessionId: string, device: DeviceInfo, files?: { name: string; size: number; mime?: string }[]) {
+    this.socket.emit("invite", { to: toSocketId, sessionId, device, files });
   }
 
   disconnect() {
