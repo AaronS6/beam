@@ -694,3 +694,15 @@ E2E VERIFICATION (agent-browser):
 
 Stage Summary:
 - The nearby button now pops up the moment another device opens the Beam site, even on the idle screen before you've picked files. Tap → file picker → sends straight to them.
+
+---
+Task ID: deploy-guide-v2
+Agent: main (user: "how to deploy the site?")
+Task: Provide clear deployment instructions
+
+Work Log:
+- Verified all deploy artifacts exist: deploy.sh, Caddyfile.prod, production-ready signaling client (NEXT_PUBLIC_SIGNALING_URL env var), Prisma StoredFile model, .beam-store/ gitignored, build/start scripts in package.json.
+- Wrote a clear 3-option deploy guide below (Vercel+Railway split, single VPS, Docker).
+
+Stage Summary:
+- Deploy guide delivered. The app is production-ready.
