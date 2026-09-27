@@ -730,3 +730,25 @@ Both services have permanent free tiers, no credit card, fully browser-deployabl
 
 Stage Summary:
 - The app is now deployable on free web services with zero local installs. Path A (direct P2P) works everywhere; Path B (store) auto-disables on serverless and hides its toggle.
+
+---
+Task ID: remove-store-toggle
+Agent: main (user: "just remove the store temporarily button we don't need that then")
+Task: Remove the "Store temporarily" (Path B) toggle from the UI entirely
+
+Work Log:
+- Removed the entire "How should they go?" Direct/Store 5 min segmented toggle from file-composer.tsx (the JSX block + the storeMode/storeAvailable/onToggleStoreMode props + the now-unused Zap/Clock lucide imports).
+- Removed onToggleStoreMode + storeAvailable + storeMode references from sender-panel.tsx (props, destructuring, the "Stored & ready"/"Stored — waiting" conditional copy, the "Path B · encrypted server storage" badge, the !storeMode condition on nearby, the Server import).
+- Removed storeMode + storeExpiresAt + onDownloadStored from receiver-panel.tsx (props, destructuring, the "Path B notice" banner, the "Grab your files" conditional, the Server/PathCountdown imports, the storeMode branch in FileRow onSave).
+- Removed the storeMode prop + the Path B Save button + the transferring spinner from file-row.tsx.
+- Removed setStoreMode + downloadStored from beam-app.tsx (the hook destructuring + the SenderPanel onToggleStoreMode prop + the ReceiverPanel onDownloadStored prop + the storeMode branch in handleSaveAll).
+
+Note: the backend Path B API routes + Prisma model + instrumentation hook remain in place (harmless, and could be re-enabled on a VPS later) — only the FRONTEND wiring is removed. The app now exclusively uses Path A (direct P2P) everywhere.
+
+E2E VERIFICATION:
+- Idle screen: no "How should they go?" / Direct / Store 5 min toggle (confirmed gone). "Send your images" + "Send images" button still present.
+- Path A transfer: works end-to-end (All yours, 100%, zero console errors).
+- Lint: 0 errors, 0 warnings.
+
+Stage Summary:
+- The "Store temporarily" button is fully removed from the UI. The app is pure Path A (direct peer-to-peer) everywhere now — simpler, cleaner, and deploys to any free web service.

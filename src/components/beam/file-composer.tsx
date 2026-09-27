@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { ImagePlus, UploadCloud, FilePlus2, Type, Send, Zap, Clock } from "lucide-react";
+import { ImagePlus, UploadCloud, FilePlus2, Type, Send } from "lucide-react";
 import { formatBytes } from "@/lib/format";
 
 /**
@@ -15,15 +15,9 @@ import { formatBytes } from "@/lib/format";
 export function FileComposer({
   onFiles,
   onPasteText,
-  storeMode,
-  storeAvailable,
-  onToggleStoreMode,
 }: {
   onFiles: (files: File[]) => void;
   onPasteText?: (text: string) => void;
-  storeMode: boolean;
-  storeAvailable: boolean;
-  onToggleStoreMode: (v: boolean) => void;
 }) {
   // DEFAULT = "images" — "Send images" is the primary CTA every time the site opens.
   const [mode, setMode] = React.useState<"images" | "files" | "text">("images");
@@ -188,61 +182,6 @@ export function FileComposer({
         className="sr-only"
         onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }}
       />
-
-      {/* STORE TEMPORARILY — big, visible segmented toggle (centered).
-          Hidden when server storage isn't available (e.g. Vercel serverless). */}
-      {storeAvailable && (
-      <div className="mt-7">
-        <p className="mb-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-muted-foreground/70">
-          How should they go?
-        </p>
-        <div className="mx-auto grid max-w-sm grid-cols-2 gap-2">
-          {/* Direct (Path A) — default */}
-          <button
-            type="button"
-            onClick={() => onToggleStoreMode(false)}
-            aria-pressed={!storeMode}
-            className={`relative flex flex-col items-center gap-1.5 rounded-2xl border-2 p-3 text-center transition-all duration-300 ${
-              !storeMode
-                ? "border-primary bg-primary/5 shadow-sm"
-                : "border-border bg-card hover:border-foreground/20"
-            }`}
-          >
-            <span className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors ${
-              !storeMode ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"
-            }`}>
-              <Zap className="h-4 w-4" strokeWidth={2.5} />
-            </span>
-            <span className="text-[13px] font-bold text-foreground">Direct</span>
-            <span className="text-[10px] leading-tight text-muted-foreground">Live, peer-to-peer</span>
-          </button>
-          {/* Store temporarily (Path B) */}
-          <button
-            type="button"
-            onClick={() => onToggleStoreMode(true)}
-            aria-pressed={storeMode}
-            className={`relative flex flex-col items-center gap-1.5 rounded-2xl border-2 p-3 text-center transition-all duration-300 ${
-              storeMode
-                ? "border-primary bg-primary/5 shadow-sm"
-                : "border-border bg-card hover:border-foreground/20"
-            }`}
-          >
-            <span className={`flex h-9 w-9 items-center justify-center rounded-xl transition-colors ${
-              storeMode ? "bg-primary text-primary-foreground" : "bg-secondary text-muted-foreground"
-            }`}>
-              <Clock className="h-4 w-4" strokeWidth={2.5} />
-            </span>
-            <span className="text-[13px] font-bold text-foreground">Store 5 min</span>
-            <span className="text-[10px] leading-tight text-muted-foreground">If they're offline</span>
-          </button>
-        </div>
-        <p className="mx-auto mt-2 max-w-[36ch] text-center text-[11px] leading-relaxed text-muted-foreground">
-          {storeMode
-            ? "Encrypted server storage. Auto-deletes within 5 min — or the moment they grab it."
-            : "Files stream device-to-device. Nothing is ever stored anywhere."}
-        </p>
-      </div>
-      )}
     </div>
   );
 }

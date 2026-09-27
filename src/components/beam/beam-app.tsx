@@ -29,22 +29,15 @@ export function BeamApp() {
     addMoreFiles,
     reorderFiles,
     sendPastedText,
-    setStoreMode,
-    downloadStored,
   } = useBeamSession(sessionIdParam);
 
   const isReceiver = state.mode === "receiver";
 
   const handleSaveAll = React.useCallback(() => {
     state.files.forEach((f) => {
-      if (state.storeMode) {
-        // Path B: trigger one-time-use downloads sequentially.
-        if (f.id) void downloadStored(f.id);
-      } else if (f.url) {
-        saveFile(f.url, f.name);
-      }
+      if (f.url) saveFile(f.url, f.name);
     });
-  }, [state.files, state.storeMode, saveFile, downloadStored]);
+  }, [state.files, saveFile]);
 
   // Global keyboard shortcuts: F/B browse, Esc reset.
   React.useEffect(() => {
@@ -78,7 +71,6 @@ export function BeamApp() {
               onShareImage={shareImage}
               onShareAll={shareAll}
               onCopyAllText={copyAllText}
-              onDownloadStored={downloadStored}
               onReset={() => {
                 if (typeof window !== "undefined") {
                   window.history.replaceState({}, "", "/");
@@ -133,7 +125,6 @@ export function BeamApp() {
                 onAddMoreFiles={addMoreFiles}
                 onReorderFiles={reorderFiles}
                 onPasteText={sendPastedText}
-                onToggleStoreMode={setStoreMode}
                 onPickNearby={sendToNearby}
               />
             </div>

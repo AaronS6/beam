@@ -12,7 +12,6 @@ import {
   Smartphone,
   Share2,
   Copy,
-  Server,
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { FileRow } from "./file-row";
@@ -20,7 +19,6 @@ import { ProgressRing } from "./progress-ring";
 import { QualityBars } from "./quality-bars";
 import { CandidateBadge } from "./candidate-badge";
 import { TransferSummary } from "./transfer-summary";
-import { PathCountdown } from "./path-countdown";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
@@ -31,7 +29,6 @@ export function ReceiverPanel({
   onShareImage,
   onShareAll,
   onCopyAllText,
-  onDownloadStored,
   onReset,
 }: {
   state: SessionState;
@@ -40,12 +37,11 @@ export function ReceiverPanel({
   onShareImage: (url: string, name: string, mime: string) => void;
   onShareAll: () => Promise<"shared" | "downloaded" | "failed">;
   onCopyAllText: () => Promise<number>;
-  onDownloadStored: (fileId: string) => Promise<void>;
   onReset: () => void;
 }) {
   const {
     phase, files, totalBytes, receivedBytes, speed, peerDevice, quality,
-    candidateType, storeMode, storeExpiresAt,
+    candidateType,
   } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
@@ -98,7 +94,7 @@ export function ReceiverPanel({
             </div>
             <p className="font-display mt-5 text-[22px] font-bold text-foreground">This link's gone</p>
             <p className="mt-1.5 max-w-[32ch] text-sm text-muted-foreground">
-              {storeMode ? "The 5 minutes are up — files are deleted for good." : "Ask the sender to whip up a new QR code and try again."}
+              Ask the sender to whip up a new QR code and try again.
             </p>
             <button
               type="button"
@@ -123,7 +119,7 @@ export function ReceiverPanel({
         </div>
         <div className="min-w-0 flex-1">
           <p className="font-display text-[19px] font-bold text-foreground">
-            {phase === "done" ? "All yours" : storeMode ? "Grab your files" : "Receiving files"}
+            {phase === "done" ? "All yours" : "Receiving files"}
           </p>
           <p className="truncate text-sm text-muted-foreground">
             {phase === "done" ? "Saved to your device" : `From ${peerDevice?.label ?? "a device"}`}
@@ -144,18 +140,8 @@ export function ReceiverPanel({
         )}
       </div>
 
-      {/* Path B notice */}
-      {storeMode && (
-        <div className="mb-4 flex flex-wrap items-center gap-2 rounded-2xl border border-border bg-secondary/60 px-4 py-3">
-          <Server className="h-4 w-4 shrink-0 text-muted-foreground" strokeWidth={1.75} />
-          <span className="text-sm font-medium text-foreground">Stored temporarily</span>
-          <span className="text-sm text-muted-foreground">·</span>
-          <PathCountdown expiresAt={storeExpiresAt} storeMode={storeMode} />
-        </div>
-      )}
-
       {/* Candidate badge (Path A) */}
-      {!storeMode && (phase === "transferring" || phase === "done") && candidateType && (
+      {(phase === "transferring" || phase === "done") && candidateType && (
         <div className="mb-4 flex flex-wrap items-center gap-2">
           <CandidateBadge type={candidateType} />
           {phase === "transferring" && <QualityBars level={quality} />}
@@ -203,11 +189,7 @@ export function ReceiverPanel({
             <FileRow
               key={f.id}
               file={f}
-              storeMode={storeMode}
-              onSave={(url, name) => {
-                if (storeMode) { void onDownloadStored(f.id); }
-                else onSave(url, name);
-              }}
+              onSave={onSave}
               onCopyText={copyText}
               onShareImage={onShareImage}
             />

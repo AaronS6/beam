@@ -34,7 +34,6 @@ export function FileRow({
   onRemove,
   onCopyText,
   onShareImage,
-  storeMode,
   draggable,
   onDragStart,
   onDragOver,
@@ -45,7 +44,6 @@ export function FileRow({
   onRemove?: (id: string) => void;
   onCopyText?: (text: string) => void;
   onShareImage?: (url: string, name: string, mime: string) => void;
-  storeMode?: boolean;
   draggable?: boolean;
   onDragStart?: (e: React.DragEvent) => void;
   onDragOver?: (e: React.DragEvent) => void;
@@ -193,20 +191,6 @@ export function FileRow({
               <Download className="h-3.5 w-3.5" strokeWidth={2} />
               Save
             </button>
-          )}
-          {/* Path B: queued stored file — Save triggers the one-time-use fetch */}
-          {!done && storeMode && onSave && file.status === "queued" && (
-            <button
-              type="button"
-              onClick={() => onSave("", file.name)}
-              className="inline-flex items-center gap-1.5 rounded-full bg-beam px-3.5 py-2 text-xs font-medium text-white transition-transform active:scale-[0.97] hover:opacity-90"
-            >
-              <Download className="h-3.5 w-3.5" strokeWidth={2} />
-              Save
-            </button>
-          )}
-          {file.status === "transferring" && storeMode && (
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" strokeWidth={2} />
           )}
           {done && !onSave && !hasText && (
             <Check className="h-5 w-5 text-foreground/70" strokeWidth={2} />

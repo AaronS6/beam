@@ -14,7 +14,6 @@ import {
   Check as CheckIcon,
   ShieldCheck,
   FilePlus2,
-  Server,
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { BeamQR } from "./beam-qr";
@@ -39,7 +38,6 @@ export function SenderPanel({
   onAddMoreFiles,
   onReorderFiles,
   onPasteText,
-  onToggleStoreMode,
   onPickNearby,
 }: {
   state: SessionState;
@@ -51,12 +49,11 @@ export function SenderPanel({
   onAddMoreFiles: (files: File[]) => void;
   onReorderFiles: (fromId: string, toId: string) => void;
   onPasteText: (text: string) => void;
-  onToggleStoreMode: (v: boolean) => void;
   onPickNearby: (socketId: string, label: string) => void;
 }) {
   const {
     phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice,
-    createdAt, quality, candidateType, storeMode, storeAvailable, storeExpiresAt, nearby,
+    createdAt, quality, candidateType, nearby,
   } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
@@ -86,8 +83,8 @@ export function SenderPanel({
     setDragId(null); setOverId(null);
   };
 
-  const canEditQueue = (phase === "waiting" || phase === "connected") && !storeMode;
-  const pathExpiry = storeMode ? storeExpiresAt : createdAt ? createdAt + 5 * 60 * 1000 : null;
+  const canEditQueue = phase === "waiting" || phase === "connected";
+  const pathExpiry = createdAt ? createdAt + 5 * 60 * 1000 : null;
 
   return (
     <div className="flex flex-col items-center">
@@ -98,9 +95,6 @@ export function SenderPanel({
             <FileComposer
               onFiles={onFiles}
               onPasteText={onPasteText}
-              storeMode={storeMode}
-              storeAvailable={storeAvailable}
-              onToggleStoreMode={onToggleStoreMode}
             />
           </BeamStage>
         )}
@@ -111,7 +105,7 @@ export function SenderPanel({
               {/* "Ready" badge above the QR */}
               <div className="animate-beam-scale mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-secondary/60 px-3 py-1.5 text-xs font-bold text-foreground">
                 <span className="h-2 w-2 animate-beam-breathe rounded-full bg-primary" />
-                {storeMode ? "Stored & ready" : "Ready to scan"}
+                Ready to scan
               </div>
               {/* QR code with a subtle blue glow ring */}
               <div className="relative">
@@ -123,12 +117,10 @@ export function SenderPanel({
                 <BeamQR value={qrUrl} size={232} className="relative" />
               </div>
               <p className="font-display mt-5 text-center text-[17px] font-bold text-foreground">
-                {storeMode ? "Scan to grab them" : "Point a phone camera here"}
+                Point a phone camera here
               </p>
               <p className="mt-1.5 max-w-[28ch] text-center text-sm leading-relaxed text-muted-foreground">
-                {storeMode
-                  ? "Link's good for 5 min — or until they download"
-                  : "They'll connect straight to your device"}
+                They'll connect straight to your device
               </p>
             </div>
           </BeamStage>
@@ -212,7 +204,7 @@ export function SenderPanel({
               </div>
               <p className="font-display mt-5 text-[20px] font-bold text-foreground">Link expired</p>
               <p className="mt-1 max-w-[30ch] text-sm text-muted-foreground">
-                {storeMode ? "The 5 minutes ran out — files are deleted for good." : "Nobody connected in time. Start fresh?"}
+                Nobody connected in time. Start fresh?
               </p>
             </div>
           </BeamStage>
@@ -225,7 +217,7 @@ export function SenderPanel({
           <div className="flex flex-col items-center gap-3 text-center">
             <div className="flex items-center gap-2 text-[15px] font-medium text-foreground">
               <span className="h-2 w-2 animate-beam-breathe rounded-full bg-primary" />
-              {storeMode ? "Stored — waiting for them to grab it" : "Waiting for a device to connect"}
+              Waiting for a device to connect
             </div>
             <div className="flex flex-wrap items-center justify-center gap-3 text-xs">
               <button
@@ -236,14 +228,8 @@ export function SenderPanel({
                 {copied ? <CheckIcon className="h-3.5 w-3.5" strokeWidth={2} /> : <Link2 className="h-3.5 w-3.5" strokeWidth={2} />}
                 {copied ? "Copied" : "Copy link"}
               </button>
-              <PathCountdown expiresAt={pathExpiry} storeMode={storeMode} className="text-muted-foreground" />
+              <PathCountdown expiresAt={pathExpiry} storeMode={false} className="text-muted-foreground" />
             </div>
-            {storeMode && (
-              <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-3 py-1 text-[11px] font-medium text-muted-foreground">
-                <Server className="h-3 w-3" strokeWidth={2} />
-                Path B · encrypted server storage
-              </div>
-            )}
           </div>
         )}
 
@@ -294,7 +280,7 @@ export function SenderPanel({
         {/* Nearby devices — tap one to send directly (no QR needed).
             Shows whenever another device is on the Beam site, even before
             you've picked files (idle). Only hidden in store mode. */}
-        {(phase === "idle" || phase === "waiting" || phase === "connected") && !storeMode && (
+        {(phase === "idle" || phase === "waiting" || phase === "connected") && (
           <NearbyDevices nearby={nearby} onPick={onPickNearby} />
         )}
 
