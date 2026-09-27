@@ -480,3 +480,39 @@ Stage Summary:
 - Replaced generic system-font typography with a proper Inter + Bricolage Grotesque pairing.
 - Files modified: src/app/layout.tsx (next/font wiring), src/app/globals.css (font vars + @utility font-display), src/components/beam/{beam-app,sections,file-composer,sender-panel,receiver-panel,nav,drag-overlay}.tsx (font-display class on headlines).
 - Key gotcha solved: Tailwind v4 purges plain CSS custom classes + @layer utilities custom classes — must use `@utility` directive.
+
+---
+Task ID: logos-transparent-images-default
+Agent: main (user: "logos should be transparent less colour... make a send images button, default on load... put pick your files in the middle")
+Task: Transparent outline logos + Images as the default mode with "Send images" primary button + centered layout
+
+Work Log:
+USER ASKS ADDRESSED:
+1. "logos should be transparent less colour" → rewrote all logo marks from solid coral→pink gradient FILLS to outline (stroke-only) versions. The two device rounded-rects + base bar are now `fill="none" stroke="url(#grad)" strokeWidth="2.4"` — transparent centers, thin gradient stroke. Only the beam arcs remain as solid strokes (the brand's signal). Applied to: BeamLogo component, nav logo, footer logo.
+2. "make a send images button, and that will be the default one everytime u open up the site" → added a third mode "images" as the DEFAULT initial state (`useState<...>("images")`). The primary CTA now reads "Send images" on load (was "Choose files"). The file input gets `accept="image/*"` in images mode so the picker filters to images; in files mode accept is unset (any file).
+3. "put the pick your files in the middle instead of them putting it on the side" → confirmed everything is centered in the card: icon (mx-auto), headline (text-center), subcopy (mx-auto text-center), 3-way toggle (mx-auto), primary button (mx-auto), Direct/Store grid (mx-auto max-w-sm), subcopy (mx-auto text-center).
+
+FILECOMPOSER REWRITE (src/components/beam/file-composer.tsx):
+- 3-way mode toggle: Images / Files / Text (Images selected by default).
+- Mode drives: icon (ImagePlus / UploadCloud / Type), headline ("Send your images" / "Pick your files" / "Type something to send"), subcopy, primary button label ("Send images" / "Choose files" / "Send text"), primary button icon, and the file input `accept` attribute.
+- Lucide icon imported: ImagePlus (new), kept FilePlus2 / Type / UploadCloud / Send / Zap / Clock.
+- The "Send images" button has the glow-pulse + hover-scale + icon-rotate animations.
+
+LOGO CHANGES:
+- src/components/beam-logo.tsx: rects now `fill="none" stroke="url(#grad)" strokeWidth="2.4"`; uses React.useId() for a unique gradient id (avoids collisions when multiple logos render on one page). Added a `stroke` prop (defaults to currentColor).
+- src/components/beam/nav.tsx: inline nav logo mark converted to outline (same fill="none" stroke pattern).
+- src/components/beam/footer.tsx: footer logo mark converted to outline.
+
+E2E VERIFICATION (agent-browser):
+- Logo outline confirmed: `rect` elements resolve to `fill="none" stroke="url(#navMarkGrad)"` (was solid `fill="url(...)`).
+- Images default confirmed: on load, headline = "Send your images", the Images toggle button is `aria-pressed="true"`, primary button = "Send images".
+- accept attribute confirmed: images mode → `accept="image/*"` (picker filters to images); files mode → `(none)` (any file).
+- Transfer works end-to-end in images default mode: uploaded icon-192.png → sender QR → receiver "All yours" with the image at 100%.
+- VLM confirmed all 4: (1) logo is outline/transparent stroke ✓ (2) headline "Send your images" + Images selected ✓ (3) primary button "Send images" ✓ (4) everything centered ✓.
+- Lint: 0 errors, 0 warnings. dev.log: zero runtime errors.
+
+Stage Summary:
+- Logos are now transparent outline strokes (less color) across nav, footer, BeamLogo component.
+- "Send images" is the default primary CTA every time the site opens (Images mode default).
+- Card layout is fully centered — icon, headline, toggle, button, store toggle all mx-auto/text-center.
+- Files modified: src/components/beam-logo.tsx, src/components/beam/{nav,footer,file-composer}.tsx.

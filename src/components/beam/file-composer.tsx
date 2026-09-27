@@ -1,18 +1,16 @@
 "use client";
 
 import * as React from "react";
-import { UploadCloud, FilePlus2, Type, Send, Zap, Clock } from "lucide-react";
+import { ImagePlus, UploadCloud, FilePlus2, Type, Send, Zap, Clock } from "lucide-react";
 import { formatBytes } from "@/lib/format";
 
 /**
  * FileComposer — the idle-state hero inside the card.
  *
- * Design intent: NO always-visible dropzone. The card stays clean and
- * inviting — a big icon, a prominent "Choose files" button, a Files/Text
- * toggle, and a BIG visible "Store temporarily" segmented toggle.
- *
- * Drag-and-drop is handled at the window level by <DragOverlay/> — it only
- * appears the moment a user starts dragging files in.
+ * Default mode is IMAGES ("Send images") — the most common use case.
+ * A 3-way toggle (Images / Files / Text) sits dead-center, with the primary
+ * action button centered below it. Drag-and-drop is handled at the window
+ * level by <DragOverlay/> — it only appears the moment a user starts dragging.
  */
 export function FileComposer({
   onFiles,
@@ -25,7 +23,8 @@ export function FileComposer({
   storeMode: boolean;
   onToggleStoreMode: (v: boolean) => void;
 }) {
-  const [mode, setMode] = React.useState<"files" | "text">("files");
+  // DEFAULT = "images" — "Send images" is the primary CTA every time the site opens.
+  const [mode, setMode] = React.useState<"images" | "files" | "text">("images");
   const [text, setText] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
 
@@ -46,6 +45,8 @@ export function FileComposer({
     return () => window.removeEventListener("paste", onPaste);
   }, [onPasteText]);
 
+  const openPicker = () => inputRef.current?.click();
+
   const handleFiles = (list: FileList | null) => {
     if (!list || list.length === 0) return;
     onFiles(Array.from(list));
@@ -64,70 +65,84 @@ export function FileComposer({
     onFiles([file]);
   };
 
+  // Icon + headline + accept attribute depend on mode
+  const icon =
+    mode === "images" ? <ImagePlus className="h-10 w-10 text-white" strokeWidth={1.75} />
+    : mode === "files" ? <UploadCloud className="h-10 w-10 text-white" strokeWidth={1.75} />
+    : <Type className="h-10 w-10 text-white" strokeWidth={1.75} />;
+
+  const headline =
+    mode === "images" ? "Send your images"
+    : mode === "files" ? "Pick your files"
+    : "Type something to send";
+
+  const subcopy =
+    mode === "images" ? "Tap below, or just drag them onto the page whenever."
+    : mode === "files" ? "Any file type — docs, zips, whatever you've got."
+    : "A link, a note, a snippet — sent as a tiny file.";
+
+  const primaryLabel =
+    mode === "images" ? "Send images"
+    : mode === "files" ? "Choose files"
+    : "Send text";
+
+  const primaryIcon =
+    mode === "images" ? <ImagePlus className="h-5 w-5 transition-transform duration-300 group-hover:rotate-6" strokeWidth={2.5} />
+    : mode === "files" ? <FilePlus2 className="h-5 w-5 transition-transform duration-300 group-hover:rotate-6" strokeWidth={2.5} />
+    : <Send className="h-5 w-5" strokeWidth={2.5} />;
+
+  const accept = mode === "images" ? "image/*" : undefined;
+
+  const modes: { id: "images" | "files" | "text"; label: string; icon: typeof Type }[] = [
+    { id: "images", label: "Images", icon: ImagePlus },
+    { id: "files", label: "Files", icon: FilePlus2 },
+    { id: "text", label: "Text", icon: Type },
+  ];
+
   return (
     <div className="flex flex-col px-7 pb-7 pt-8">
-      {/* Icon (static — no floating) */}
+      {/* Icon (static, centered) */}
       <div
         className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-[26px] shadow-float"
         style={{ background: "var(--beam-gradient)" }}
       >
-        {mode === "files" ? (
-          <UploadCloud className="h-10 w-10 text-white" strokeWidth={1.75} />
-        ) : (
-          <Type className="h-10 w-10 text-white" strokeWidth={1.75} />
-        )}
+        {icon}
       </div>
 
-      {/* Headline + subcopy */}
+      {/* Headline + subcopy (centered) */}
       <h2 className="font-display text-center text-[24px] font-bold tracking-tight text-foreground">
-        {mode === "files" ? "Pick your files" : "Type something to send"}
+        {headline}
       </h2>
-      <p className="mx-auto mt-1.5 max-w-[30ch] text-center text-sm leading-relaxed text-muted-foreground">
-        {mode === "files"
-          ? "Tap below, or just drag them onto the page whenever."
-          : "A link, a note, a snippet — sent as a tiny file."}
+      <p className="mx-auto mt-1.5 max-w-[32ch] text-center text-sm leading-relaxed text-muted-foreground">
+        {subcopy}
       </p>
 
-      {/* Files / Text toggle */}
+      {/* 3-way mode toggle — Images (default) / Files / Text — centered */}
       <div className="mx-auto mt-5 inline-flex items-center rounded-full bg-secondary p-1 text-sm">
-        <button
-          type="button"
-          onClick={() => setMode("files")}
-          className={`inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 font-semibold transition-all duration-300 ${
-            mode === "files"
-              ? "bg-card text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          aria-pressed={mode === "files"}
-        >
-          <FilePlus2 className="h-3.5 w-3.5" strokeWidth={2.5} /> Files
-        </button>
-        <button
-          type="button"
-          onClick={() => setMode("text")}
-          className={`inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 font-semibold transition-all duration-300 ${
-            mode === "text"
-              ? "bg-card text-foreground shadow-sm"
-              : "text-muted-foreground hover:text-foreground"
-          }`}
-          aria-pressed={mode === "text"}
-        >
-          <Type className="h-3.5 w-3.5" strokeWidth={2.5} /> Text
-        </button>
+        {modes.map((m) => {
+          const Icon = m.icon;
+          const active = mode === m.id;
+          return (
+            <button
+              key={m.id}
+              type="button"
+              onClick={() => setMode(m.id)}
+              className={`inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 font-semibold transition-all duration-300 ${
+                active
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+              aria-pressed={active}
+            >
+              <Icon className="h-3.5 w-3.5" strokeWidth={2.5} /> {m.label}
+            </button>
+          );
+        })}
       </div>
 
-      {/* Mode body */}
-      {mode === "files" ? (
-        <button
-          type="button"
-          onClick={() => inputRef.current?.click()}
-          className="animate-glow-pulse group mx-auto mt-6 inline-flex items-center gap-2.5 rounded-full bg-primary px-7 py-3.5 text-base font-bold text-primary-foreground transition-all duration-200 active:scale-[0.96] hover:scale-[1.03]"
-        >
-          <FilePlus2 className="h-5 w-5 transition-transform duration-300 group-hover:rotate-6" strokeWidth={2.5} />
-          Choose files
-        </button>
-      ) : (
-        <div className="mt-5">
+      {/* Primary action — centered */}
+      {mode === "text" ? (
+        <div className="mx-auto mt-6 w-full max-w-sm">
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
@@ -152,25 +167,32 @@ export function FileComposer({
             </button>
           </div>
         </div>
+      ) : (
+        <button
+          type="button"
+          onClick={openPicker}
+          className="animate-glow-pulse group mx-auto mt-6 inline-flex items-center gap-2.5 rounded-full bg-primary px-7 py-3.5 text-base font-bold text-primary-foreground transition-all duration-200 active:scale-[0.96] hover:scale-[1.03]"
+        >
+          {primaryIcon}
+          {primaryLabel}
+        </button>
       )}
 
       <input
         ref={inputRef}
         type="file"
         multiple
+        accept={accept}
         className="sr-only"
         onChange={(e) => { handleFiles(e.target.files); e.target.value = ""; }}
       />
 
-      {/* ===========================================================
-          STORE TEMPORARILY — big, visible segmented toggle
-          (was a buried checkbox; now an obvious two-option switch)
-         =========================================================== */}
+      {/* STORE TEMPORARILY — big, visible segmented toggle (centered) */}
       <div className="mt-7">
         <p className="mb-2.5 text-center text-[11px] font-bold uppercase tracking-wider text-muted-foreground/70">
           How should they go?
         </p>
-        <div className="grid grid-cols-2 gap-2">
+        <div className="mx-auto grid max-w-sm grid-cols-2 gap-2">
           {/* Direct (Path A) — default */}
           <button
             type="button"
@@ -210,7 +232,7 @@ export function FileComposer({
             <span className="text-[10px] leading-tight text-muted-foreground">If they're offline</span>
           </button>
         </div>
-        <p className="mt-2 text-center text-[11px] leading-relaxed text-muted-foreground">
+        <p className="mx-auto mt-2 max-w-[36ch] text-center text-[11px] leading-relaxed text-muted-foreground">
           {storeMode
             ? "Encrypted server storage. Auto-deletes within 5 min — or the moment they grab it."
             : "Files stream device-to-device. Nothing is ever stored anywhere."}

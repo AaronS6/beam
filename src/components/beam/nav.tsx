@@ -19,12 +19,13 @@ export function Nav() {
                   <stop offset="100%" stopColor="#FF4D8D" />
                 </linearGradient>
               </defs>
-              <rect x="8" y="14" width="16" height="36" rx="4.5" fill="url(#navMarkGrad)" />
-              <rect x="40" y="16" width="16" height="24" rx="3" fill="url(#navMarkGrad)" />
-              <rect x="36" y="42" width="24" height="3.5" rx="1.75" fill="url(#navMarkGrad)" />
-              <g fill="none" stroke="url(#navMarkGrad)" strokeWidth="2.6" strokeLinecap="round">
+              {/* Outline-only device shapes */}
+              <rect x="8" y="14" width="16" height="36" rx="4.5" fill="none" stroke="url(#navMarkGrad)" strokeWidth="2.4" />
+              <rect x="40" y="16" width="16" height="24" rx="3" fill="none" stroke="url(#navMarkGrad)" strokeWidth="2.4" />
+              <rect x="36" y="42" width="24" height="3.5" rx="1.75" fill="none" stroke="url(#navMarkGrad)" strokeWidth="2.4" />
+              <g fill="none" stroke="url(#navMarkGrad)" strokeWidth="2.4" strokeLinecap="round">
                 <path d="M 26 32 Q 32 23 38 32" />
-                <path d="M 24.5 32 Q 32 18.5 39.5 32" opacity="0.5" />
+                <path d="M 24.5 32 Q 32 18.5 39.5 32" opacity="0.45" />
               </g>
             </svg>
             <span className="font-display text-[18px] font-bold tracking-tight text-foreground">Beam</span>
