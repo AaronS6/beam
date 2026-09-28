@@ -61,6 +61,12 @@ export type SessionState = {
   transferEndedAt: number | null;
   peakSpeed: number;
   candidateType: "host" | "srflx" | "prflx" | "relay" | "unknown" | null;
+  /** Sender-side: true once the sender has sent every chunk + the "done"
+   *  control message and is WAITING for the receiver's "all-received" ack.
+   *  The UI uses this to swap "Beaming to X" → "Finishing up on X — keep
+   *  this app open" so the user doesn't close the sender phone while the
+   *  receiver is still draining late chunks + reassembling blobs. */
+  finishing: boolean;
   /** Whether Path B (server storage) is available on this host. False on
    *  serverless hosts (Vercel) with no persistent disk → "Store temporarily"
    *  toggle is hidden. */
@@ -86,6 +92,7 @@ const INITIAL: SessionState = {
   transferEndedAt: null,
   peakSpeed: 0,
   candidateType: null,
+  finishing: false,
   nearby: [],
 };
 
@@ -772,6 +779,9 @@ function makeTransfer(
       transferStartedAt: Date.now(),
       transferEndedAt: null,
       peakSpeed: 0,
+      // New transfer starting — clear any stale "finishing" flag from a
+      // previous run.
+      finishing: false,
     });
   };
   t.onChannelClose = () => {
@@ -797,6 +807,12 @@ function makeTransfer(
   t.onFailed = (reason) => patch({ phase: "error", error: reason });
   t.onQuality = (level) => patch({ quality: level });
   t.onCandidateType = (ct) => patch({ candidateType: ct });
+  // Sender has sent every chunk + the "done" message and is now waiting for
+  // the receiver's "all-received" ack. Flip the UI to a "finishing up —
+  // keep this app open" state so the user doesn't close the sender phone
+  // (which would tear down the WebRTC connection and strand the receiver
+  // at 100% with no Download button).
+  t.onSenderFinishing = () => patch({ finishing: true });
 
   t.onFileMeta = (files: IncomingFile[]) => {
     setState((s) => ({
@@ -880,6 +896,9 @@ function makeTransfer(
       phase: "done",
       speed: 0,
       transferEndedAt: Date.now(),
+      // The wait is over (receiver acked, or 20s fallback). Either way the
+      // sender is no longer "finishing".
+      finishing: false,
       // SENDER: mark all files as done (they were sent — no URL needed).
       // RECEIVER: do NOT mark files as done here. The receiver's finalizeFile
       // (async) is still reassembling blobs + creating URLs. If we mark them

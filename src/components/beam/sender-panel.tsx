@@ -14,6 +14,8 @@ import {
   Check as CheckIcon,
   ShieldCheck,
   FilePlus2,
+  Smartphone,
+  AlertTriangle,
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { BeamQR } from "./beam-qr";
@@ -53,7 +55,7 @@ export function SenderPanel({
 }) {
   const {
     phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice,
-    createdAt, quality, candidateType, nearby,
+    createdAt, quality, candidateType, nearby, finishing,
   } = state;
   const overall = totalBytes > 0 ? Math.min(100, Math.round((receivedBytes / totalBytes) * 100)) : 0;
   const remaining = speed > 0 ? (totalBytes - receivedBytes) / speed : Infinity;
@@ -150,11 +152,24 @@ export function SenderPanel({
                 <span className="text-3xl font-bold tabular-nums tracking-tight text-foreground">
                   {overall}<span className="text-lg text-muted-foreground">%</span>
                 </span>
-                <span className="mt-0.5 text-xs font-medium text-muted-foreground">{formatSpeed(speed)}</span>
+                <span className="mt-0.5 text-xs font-medium text-muted-foreground">
+                  {finishing ? "finishing…" : formatSpeed(speed)}
+                </span>
               </ProgressRing>
-              <p className="mt-4 text-sm text-muted-foreground">
-                Beaming to {peerDevice?.label ?? "device"}
+              <p className="font-display mt-4 text-[17px] font-bold text-foreground">
+                {finishing
+                  ? `Finishing up on ${peerDevice?.label ?? "the other device"}`
+                  : `Beaming to ${peerDevice?.label ?? "device"}`}
               </p>
+              {finishing ? (
+                <p className="mt-1 max-w-[30ch] text-center text-xs leading-relaxed text-muted-foreground">
+                  Almost done — the other device is saving your files. Keep this app open.
+                </p>
+              ) : (
+                <p className="mt-1 text-center text-xs text-muted-foreground">
+                  {overall < 100 ? "Sending your files peer-to-peer" : "Wrapping up"}
+                </p>
+              )}
               <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
                 <div className="inline-flex items-center gap-1.5 rounded-full border border-border bg-secondary/60 px-2.5 py-1 text-[11px] font-medium text-muted-foreground">
                   <ShieldCheck className="h-3 w-3" strokeWidth={2} />
@@ -190,9 +205,12 @@ export function SenderPanel({
                   <path d="M12 24.5 L20.5 33 L36 16" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="animate-beam-check" />
                 </svg>
               </div>
-              <p className="font-display mt-5 text-[24px] font-bold text-foreground">All sent</p>
+              <p className="font-display mt-5 text-[24px] font-bold text-foreground">All delivered</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {files.length} {files.length === 1 ? "file" : "files"} · {formatBytes(totalBytes)}
+              </p>
+              <p className="mt-2 text-center text-xs text-muted-foreground">
+                The receiver confirmed every file arrived safely.
               </p>
               <div className="mt-5 w-full"><TransferSummary state={state} /></div>
             </div>
@@ -259,6 +277,32 @@ export function SenderPanel({
             <p className="text-xs text-muted-foreground">
               If this takes more than 30s, the network may be blocking WebRTC.
             </p>
+          </div>
+        )}
+
+        {phase === "transferring" && (
+          <div
+            className={`mb-4 flex items-start gap-3 rounded-2xl border px-4 py-3 ${
+              finishing
+                ? "border-primary/30 bg-primary/5"
+                : "border-border bg-secondary/60"
+            }`}
+          >
+            {finishing ? (
+              <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-primary" strokeWidth={1.75} />
+            ) : (
+              <Smartphone className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+            )}
+            <div>
+              <p className="font-display text-[14px] font-bold text-foreground">
+                {finishing ? "Don't close this app yet" : "Keep both phones on"}
+              </p>
+              <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
+                {finishing
+                  ? "Beam is still delivering the last pieces to the other device. Closing this app or locking your phone can interrupt the transfer."
+                  : "Keep both phones unlocked and this app open until the transfer finishes. Closing either device can interrupt it."}
+              </p>
+            </div>
           </div>
         )}
 

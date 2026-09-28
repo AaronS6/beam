@@ -1,0 +1,743 @@
+     1→/**
+     2→ * Beam — WebRTC peer-to-peer transfer manager (PARALLEL-CHANNEL, RELIABLE)
+     3→ *
+     4→ * ====================================================================================
+     5→ * THE OFFER / ANSWER / ICE FLOW (the tricky part — read this if debugging pairing)
+     6→ * ====================================================================================
+     7→ *
+     8→ *  SENDER (the device showing the QR)                 RECEIVER (the device that scanned)
+     9→ *  --------------------------------                   --------------------------------
+    10→ *  1. signaling.createSession(id)                      1. signaling.joinSession(id)
+    11→ *  2. waits for `peer-joined` ←── server tells both peers ──→ server replies `session-joined`
+    12→ *  3. create RTCPeerConnection + N data channels:
+    13→ *       ch0 "ctrl"  (ordered, reliable)   — control messages only
+    14→ *       ch1..3 "d0".."d2" (unordered, RELIABLE) — striped file bytes
+    15→ *  4. pc.createOffer() → setLocalDescription(offer)
+    16→ *  5. signal { kind:"offer", offer }  ──→  6. pc.setRemoteDescription(offer)
+    17→ *                                            ondatachannel fires for ch0..ch3
+    18→ *                                            7. pc.createAnswer() → setLocalDescription
+    19→ *                              ←——————       8. signal { kind:"answer", answer }
+    20→ *  9. pc.setRemoteDescription(answer)
+    21→ *  10. ICE candidates trickled both ways → addIceCandidate
+    22→ *  11. ICE connects (prefer host/srflx; relay = last resort). DataChannels open.
+    23→ *  12. SENDER streams 256KB chunks, striped round-robin across d0..d2. Each binary
+    24→ *      message carries an 8-byte HEADER: [4 bytes fileSeq][4 bytes chunkIndex] so
+    25→ *      the receiver is self-describing — no dependency on control-channel ordering.
+    26→ *  13. Control channel carries: meta, file-start, file-end, done, cancel.
+    27→ *  14. Receiver reassembles chunks by index → Blob → one-tap save.
+    28→ *
+    29→ * RELIABILITY FIX (v4 — fixes broken images + stuck downloads):
+    30→ *  • Data channels are now RELIABLE (no maxRetransmits). Dropped chunks corrupt
+    31→ *    files — `ordered:false` alone is fine (unordered but guaranteed delivery).
+    32→ *  • Each binary chunk is SELF-DESCRIBING (8-byte header with fileSeq + chunkIndex).
+    33→ *    The old "pendingChunkMeta" approach broke because control messages and binary
+    34→ *    chunks arrive out of order across parallel channels, mismatching meta→chunk.
+    35→ *  • ICE reconnect is debounced (1.5s) so brief flutters don't show "connection dropped".
+    36→ * ====================================================================================
+    37→ */
+    38→
+    39→import type { SignalingClient, SignalData } from "./signaling";
+    40→
+    41→const CHUNK_SIZE = 16 * 1024; // 16KB — safely under WebRTC's SCTP max-message-size
+    42→                              // (varies 64KB-256KB by browser, but 16KB always works).
+    43→                              // Larger chunks throw "Trying to send message larger than
+    44→                              // max-message-size" and the transfer silently stalls at 0%.
+    45→const NUM_DATA_CHANNELS = 3; // striped data channels (excludes the control channel)
+    46→const HIGH_WATERMARK = 8 * 1024 * 1024; // 8MB — pause when a channel's buffer exceeds this
+    47→const LOW_WATERMARK = 2 * 1024 * 1024; // 2MB — resume when it drains below this
+    48→const RECONNECT_DEBOUNCE_MS = 1500; // wait this long before showing "reconnecting"
+    49→// Hard ceilings that escalate a hung connection to "failed" instead of waiting forever.
+    50→// These fix the "stuck at connecting" symptom on hostile networks (symmetric NAT, UDP
+    51→// blocked, etc.) where ICE can sit in "checking" indefinitely without ever firing "failed".
+    52→const ICE_CONNECT_TIMEOUT_MS = 30_000; // no ICE connection in 30s → fail
+    53→const RECONNECTING_TIMEOUT_MS = 30_000; // ICE "disconnected" → "failed" after 30s
+    54→const CHANNEL_OPEN_TIMEOUT_MS = 15_000; // channels never open after ICE connects → fail
+    55→
+    56→// Binary header layout for each data-channel message: 4 bytes fileSeq + 4 bytes chunkIndex
+    57→const HEADER_BYTES = 8;
+    58→
+    59→export type IncomingFile = {
+    60→  id: string;
+    61→  name: string;
+    62→  size: number;
+    63→  mime?: string;
+    64→};
+    65→
+    66→export type TransferState =
+    67→  | "idle"
+    68→  | "waiting"
+    69→  | "connecting"
+    70→  | "connected"
+    71→  | "transferring"
+    72→  | "reconnecting"
+    73→  | "done"
+    74→  | "error";
+    75→
+    76→type IceServers = RTCIceServer[];
+    77→
+    78→/** Build the WebRTC ICE server config: Google STUN + optional TURN from env. */
+    79→export function getIceServers(): IceServers {
+    80→  const servers: IceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+    81→  const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
+    82→  const turnUser = process.env.NEXT_PUBLIC_TURN_USER;
+    83→  const turnCred = process.env.NEXT_PUBLIC_TURN_CRED;
+    84→  if (turnUrl) {
+    85→    servers.push({ urls: turnUrl, username: turnUser, credential: turnCred });
+    86→  }
+    87→  return servers;
+    88→}
+    89→
+    90→// Control messages (sent on the ordered control channel as JSON strings)
+    91→type ControlMessage =
+    92→  | { type: "meta"; files: IncomingFile[] }
+    93→  | { type: "file-start"; seq: number; id: string; name: string; size: number; mime?: string }
+    94→  | { type: "file-end"; seq: number }
+    95→  | { type: "done" }
+    96→  | { type: "cancel" };
+    97→
+    98→export class BeamTransfer {
+    99→  readonly role: "sender" | "receiver";
+   100→  private sessionId: string;
+   101→  private signaling: SignalingClient;
+   102→  private iceServers: IceServers;
+   103→
+   104→  private pc: RTCPeerConnection | null = null;
+   105→  private ctrlCh: RTCDataChannel | null = null; // ordered control channel
+   106→  private dataChannels: RTCDataChannel[] = []; // unordered RELIABLE striped data channels
+   107→  private channelsOpen = 0;
+   108→
+   109→  // ---- Sender-side state ----
+   110→  private sendQueue: File[] = [];
+   111→  private sending = false;
+   112→
+   113→  // ---- Receiver-side state ----
+   114→  // Keyed by fileSeq (a number, assigned per-file in order).
+   115→  private incoming: Map<
+   116→    number,
+   117→    {
+   118→      chunks: Map<number, ArrayBuffer>;
+   119→      received: number;
+   120→      count: number;
+   121→      expectedCount: number;
+   122→      file: IncomingFile;
+   123→      url?: string;
+   124→      finalized?: boolean;
+   125→    }
+   126→  > = new Map();
+   127→
+   128→  // ---- Callbacks (assigned by the hook) ----
+   129→  onChannelOpen?: () => void;
+   130→  onChannelClose?: () => void;
+   131→  onReconnecting?: () => void;
+   132→  onReconnected?: () => void;
+   133→  onFailed?: (reason: string) => void;
+   134→  onFileMeta?: (files: IncomingFile[]) => void;
+   135→  onFileStart?: (file: IncomingFile) => void;
+   136→  onFileProgress?: (id: string, received: number, size: number) => void;
+   137→  onFileComplete?: (file: IncomingFile, url: string) => void;
+   138→  onAllComplete?: () => void;
+   139→  onCancel?: () => void;
+   140→  onQuality?: (level: number) => void;
+   141→  onCandidateType?: (type: "host" | "srflx" | "prflx" | "relay" | "unknown") => void;
+   142→
+   143→  private statsTimer: ReturnType<typeof setInterval> | null = null;
+   144→  private loggedWinner = false;
+   145→  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+   146→  private isReconnecting = false;
+   147→  // Hard-fail timers (fix "stuck at connecting" forever).
+   148→  private iceConnectTimer: ReturnType<typeof setTimeout> | null = null;
+   149→  private reconnectingFailTimer: ReturnType<typeof setTimeout> | null = null;
+   150→  private channelOpenTimer: ReturnType<typeof setTimeout> | null = null;
+   151→
+   152→  constructor(
+   153→    role: "sender" | "receiver",
+   154→    sessionId: string,
+   155→    signaling: SignalingClient,
+   156→    iceServers?: IceServers,
+   157→  ) {
+   158→    this.role = role;
+   159→    this.sessionId = sessionId;
+   160→    this.signaling = signaling;
+   161→    this.iceServers = iceServers ?? getIceServers();
+   162→  }
+   163→
+   164→  // --------------------------------------------------------------------------------------
+   165→  // RTCPeerConnection setup
+   166→  // --------------------------------------------------------------------------------------
+   167→  private ensurePC() {
+   168→    if (this.pc) return this.pc;
+   169→    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+   170→
+   171→    // ICE candidate trickle
+   172→    pc.onicecandidate = (e) => {
+   173→      if (e.candidate) {
+   174→        this.signaling.sendSignal(this.sessionId, { kind: "candidate", payload: e.candidate.toJSON() });
+   175→      }
+   176→    };
+   177→
+   178→    // ICE gathering / connection timeout — fire onFailed if ICE never connects.
+   179→    // This is the #1 fix for "stuck at connecting": on hostile networks (symmetric
+   180→    // NAT, UDP blocked, enterprise firewall), ICE can sit in "checking" forever
+   181→    // without ever firing "failed" in some browsers. We add our own hard ceiling.
+   182→    this.iceConnectTimer = setTimeout(() => {
+   183→      if (!this.pc) return;
+   184→      const st = this.pc.iceConnectionState;
+   185→      if (st !== "connected" && st !== "completed") {
+   186→        this.onFailed?.(
+   187→          "Couldn't connect peer-to-peer within 30s. The network may be blocking WebRTC traffic — try a different network or a TURN relay.",
+   188→        );
+   189→      }
+   190→    }, ICE_CONNECT_TIMEOUT_MS);
+   191→
+   192→    // ICE connection state → debounced reconnect / fail UX + winner-candidate logging
+   193→    pc.oniceconnectionstatechange = () => {
+   194→      const st = pc.iceConnectionState;
+   195→      if (st === "disconnected") {
+   196→        // Debounce: only show "reconnecting" if it stays disconnected for >1.5s.
+   197→        // Brief ICE flutters are normal and shouldn't surface as "connection dropped".
+   198→        if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+   199→        this.reconnectTimer = setTimeout(() => {
+   200→          this.isReconnecting = true;
+   201→          this.onReconnecting?.();
+   202→          // Escalate to "failed" if reconnection takes longer than 30s — don't
+   203→          // let the user sit in "reconnecting" forever.
+   204→          if (!this.reconnectingFailTimer) {
+   205→            this.reconnectingFailTimer = setTimeout(() => {
+   206→              if (this.pc && this.pc.iceConnectionState === "disconnected") {
+   207→                this.onFailed?.("Connection lost and couldn't recover after 30s. The other device may have left.");
+   208→              }
+   209→            }, RECONNECTING_TIMEOUT_MS);
+   210→          }
+   211→        }, RECONNECT_DEBOUNCE_MS);
+   212→      } else if (st === "connected" || st === "completed") {
+   213→        if (this.reconnectTimer) {
+   214→          clearTimeout(this.reconnectTimer);
+   215→          this.reconnectTimer = null;
+   216→        }
+   217→        if (this.reconnectingFailTimer) {
+   218→          clearTimeout(this.reconnectingFailTimer);
+   219→          this.reconnectingFailTimer = null;
+   220→        }
+   221→        // ICE made it — cancel the initial-connect timeout so we don't false-fire.
+   222→        if (this.iceConnectTimer) {
+   223→          clearTimeout(this.iceConnectTimer);
+   224→          this.iceConnectTimer = null;
+   225→        }
+   226→        this.logSelectedCandidateType();
+   227→        if (this.isReconnecting) {
+   228→          this.isReconnecting = false;
+   229→          this.onReconnected?.();
+   230→        }
+   231→      } else if (st === "failed") {
+   232→        if (this.reconnectTimer) {
+   233→          clearTimeout(this.reconnectTimer);
+   234→          this.reconnectTimer = null;
+   235→        }
+   236→        if (this.reconnectingFailTimer) {
+   237→          clearTimeout(this.reconnectingFailTimer);
+   238→          this.reconnectingFailTimer = null;
+   239→        }
+   240→        if (this.iceConnectTimer) {
+   241→          clearTimeout(this.iceConnectTimer);
+   242→          this.iceConnectTimer = null;
+   243→        }
+   244→        this.onFailed?.("Connection failed. The network may be blocking peer-to-peer traffic.");
+   245→      }
+   246→    };
+   247→
+   248→    // Receiver gets data channels from the sender's offer. Infer control-vs-data
+   249→    // from the channel label ("ctrl" → control; "d0".."dN" → data).
+   250→    pc.ondatachannel = (e) => {
+   251→      this.attachChannel(e.channel, e.channel.label === "ctrl");
+   252→    };
+   253→
+   254→    this.pc = pc;
+   255→    return pc;
+   256→  }
+   257→
+   258→  // --------------------------------------------------------------------------------------
+   259→  // SENDER: create the offer + N data channels, then send the offer.
+   260→  // --------------------------------------------------------------------------------------
+   261→  async createOffer() {
+   262→    const pc = this.ensurePC();
+   263→    // Control channel: ordered + reliable (default — no maxRetransmits).
+   264→    this.ctrlCh = pc.createDataChannel("ctrl", { ordered: true });
+   265→    this.attachChannel(this.ctrlCh, true);
+   266→    // Data channels: unordered but RELIABLE (NO maxRetransmits — dropped chunks
+   267→    // corrupt files). Unordered is fine because we reassemble by index.
+   268→    for (let i = 0; i < NUM_DATA_CHANNELS; i++) {
+   269→      const ch = pc.createDataChannel(`d${i}`, { ordered: false });
+   270→      this.attachChannel(ch, false);
+   271→    }
+   272→    // Channel-open fallback: if not all channels open within CHANNEL_OPEN_TIMEOUT_MS
+   273→    // after ICE connects, fire onChannelOpen anyway with whatever's open so the
+   274→    // transfer can proceed. If NONE are open after this ceiling, fire onFailed.
+   275→    if (!this.channelOpenTimer) {
+   276→      this.channelOpenTimer = setTimeout(() => {
+   277→        if (this.channelsOpen >= 1 + NUM_DATA_CHANNELS) return;
+   278→        if (this.channelsOpen === 0) {
+   279→          this.onFailed?.("Data channels never opened. The peer may not be ready, or the connection dropped.");
+   280→        } else {
+   281→          // Partial open — proceed with what we have. Better than hanging.
+   282→          console.warn(`[beam-webrtc] Channel-open timeout fired with ${this.channelsOpen}/${1 + NUM_DATA_CHANNELS} open — proceeding with available channels.`);
+   283→          this.onChannelOpen?.();
+   284→          this.startQualityPolling();
+   285→          if (this.role === "sender" && !this.sending) {
+   286→            void this.sendQueuedFiles();
+   287→          }
+   288→        }
+   289→      }, CHANNEL_OPEN_TIMEOUT_MS);
+   290→    }
+   291→    const offer = await pc.createOffer();
+   292→    await pc.setLocalDescription(offer);
+   293→    this.signaling.sendSignal(this.sessionId, { kind: "offer", payload: offer });
+   294→  }
+   295→
+   296→  // --------------------------------------------------------------------------------------
+   297→  // RECEIVER: handle an incoming offer — set remote desc, create + send answer.
+   298→  // --------------------------------------------------------------------------------------
+   299→  private async handleOffer(offer: RTCSessionDescriptionInit) {
+   300→    const pc = this.ensurePC();
+   301→    await pc.setRemoteDescription(offer);
+   302→    const answer = await pc.createAnswer();
+   303→    await pc.setLocalDescription(answer);
+   304→    this.signaling.sendSignal(this.sessionId, { kind: "answer", payload: answer });
+   305→  }
+   306→
+   307→  // --------------------------------------------------------------------------------------
+   308→  // BOTH: dispatch an incoming signaling message.
+   309→  // --------------------------------------------------------------------------------------
+   310→  async handleSignal(data: SignalData) {
+   311→    const pc = this.ensurePC();
+   312→    if (data.kind === "offer") {
+   313→      await this.handleOffer(data.payload);
+   314→    } else if (data.kind === "answer") {
+   315→      await pc.setRemoteDescription(data.payload);
+   316→    } else if (data.kind === "candidate") {
+   317→      try {
+   318→        await pc.addIceCandidate(data.payload);
+   319→      } catch {
+   320→        // Late candidates after a restart can throw — safe to ignore.
+   321→      }
+   322→    }
+   323→  }
+   324→
+   325→  // --------------------------------------------------------------------------------------
+   326→  // Channel wiring — runs on both sides once each channel exists.
+   327→  // --------------------------------------------------------------------------------------
+   328→  private attachChannel(ch: RTCDataChannel, isControl: boolean) {
+   329→    ch.binaryType = "arraybuffer";
+   330→    ch.bufferedAmountLowThreshold = LOW_WATERMARK;
+   331→    ch.onopen = () => {
+   332→      this.channelsOpen++;
+   333→      // All channels (1 ctrl + N data) open → transfer can begin.
+   334→      if (this.channelsOpen === 1 + NUM_DATA_CHANNELS) {
+   335→        // Cancel the fallback timer — we got here the happy-path way.
+   336→        if (this.channelOpenTimer) {
+   337→          clearTimeout(this.channelOpenTimer);
+   338→          this.channelOpenTimer = null;
+   339→        }
+   340→        this.onChannelOpen?.();
+   341→        this.startQualityPolling();
+   342→        if (this.role === "sender" && !this.sending) {
+   343→          void this.sendQueuedFiles();
+   344→        }
+   345→      }
+   346→    };
+   347→    ch.onclose = () => {
+   348→      this.stopQualityPolling();
+   349→      this.onChannelClose?.();
+   350→    };
+   351→    ch.onmessage = (e) => {
+   352→      if (isControl) {
+   353→        if (typeof e.data === "string") this.handleControlMessage(e.data);
+   354→      } else {
+   355→        // Binary chunk on a data channel — self-describing (8-byte header).
+   356→        if (e.data instanceof ArrayBuffer) this.handleChunkMessage(e.data);
+   357→      }
+   358→    };
+   359→    if (isControl) {
+   360→      this.ctrlCh = ch;
+   361→    } else {
+   362→      this.dataChannels.push(ch);
+   363→    }
+   364→  }
+   365→
+   366→  // --------------------------------------------------------------------------------------
+   367→  // RECEIVER: control channel message handler.
+   368→  // --------------------------------------------------------------------------------------
+   369→  private handleControlMessage(raw: string) {
+   370→    let msg: ControlMessage;
+   371→    try {
+   372→      msg = JSON.parse(raw) as ControlMessage;
+   373→    } catch {
+   374→      return;
+   375→    }
+   376→    switch (msg.type) {
+   377→      case "meta":
+   378→        this.onFileMeta?.(msg.files);
+   379→        break;
+   380→      case "file-start": {
+   381→        const file: IncomingFile = { id: msg.id, name: msg.name, size: msg.size, mime: msg.mime };
+   382→        // Expected chunk count = ceil(size / CHUNK_SIZE). We need this because
+   383→        // the control channel is ordered but the data channels are unordered —
+   384→        // file-end (control) can arrive BEFORE all binary chunks (data) are
+   385→        // processed, so we must wait for the full expected count on file-end.
+   386→        const expectedCount = Math.max(1, Math.ceil(msg.size / CHUNK_SIZE));
+   387→        this.incoming.set(msg.seq, { chunks: new Map(), received: 0, count: 0, expectedCount, file });
+   388→        this.onFileStart?.(file);
+   389→        break;
+   390→      }
+   391→      case "file-end": {
+   392→        // Wait until all expected chunks have arrived before reassembling.
+   393→        // (unordered data channels may still be delivering when the ordered
+   394→        // control channel's file-end message arrives.)
+   395→        void this.finalizeFile(msg.seq);
+   396→        break;
+   397→      }
+   398→      case "done": {
+   399→        // CRITICAL FIX for "stuck at 100% with no download button":
+   400→        // Before announcing completion, sweep through every file we've heard
+   401→        // about (via file-start) and ensure it gets finalized. This catches:
+   402→        //   • empty files (no chunks ever sent → no auto-finalize trigger)
+   403→        //   • files where the file-end control message was lost mid-transfer
+   404→        //   • files where finalizeFile's polling timed out before chunks arrived
+   405→        // Each finalizeFile call ALWAYS fires onFileComplete (even with zero
+   406→        // chunks → empty blob → real URL). So the receiver's UI gets a real
+   407→        // download URL for every file, never a phantom "done with no URL".
+   408→        for (const seq of Array.from(this.incoming.keys())) {
+   409→          const entry = this.incoming.get(seq);
+   410→          if (entry && !entry.finalized) {
+   411→            void this.finalizeFile(seq);
+   412→          }
+   413→        }
+   414→        this.onAllComplete?.();
+   415→        break;
+   416→      }
+   417→      case "cancel":
+   418→        this.onCancel?.();
+   419→        break;
+   420→    }
+   421→  }
+   422→
+   423→  // --------------------------------------------------------------------------------------
+   424→  // RECEIVER: binary chunk handler — reads the 8-byte self-describing header.
+   425→  //
+   426→  // Each data-channel message = [4 bytes fileSeq (uint32)][4 bytes chunkIndex (uint32)][data]
+   427→  // This is independent of control-channel ordering — the chunk knows where it belongs.
+   428→  // --------------------------------------------------------------------------------------
+   429→  private handleChunkMessage(raw: ArrayBuffer) {
+   430→    if (raw.byteLength < HEADER_BYTES) return;
+   431→    const dv = new DataView(raw);
+   432→    const fileSeq = dv.getUint32(0, false); // big-endian
+   433→    const chunkIndex = dv.getUint32(4, false);
+   434→    const data = raw.slice(HEADER_BYTES);
+   435→
+   436→    const entry = this.incoming.get(fileSeq);
+   437→    if (!entry) return;
+   438→    entry.chunks.set(chunkIndex, data);
+   439→    entry.received += data.byteLength;
+   440→    entry.count = Math.max(entry.count, chunkIndex + 1);
+   441→    this.onFileProgress?.(entry.file.id, entry.received, entry.file.size);
+   442→
+   443→    // SAFETY: if all bytes have been received (received >= file size), auto-
+   444→    // finalize immediately — don't wait for the file-end control message.
+   445→    // This fixes the "stuck at 100%" bug where the file-end message arrives
+   446→    // late or the expectedCount calc was off by one.
+   447→    if (!entry.finalized && entry.received >= entry.file.size) {
+   448→      void this.finalizeFile(fileSeq);
+   449→    }
+   450→  }
+   451→
+   452→  // --------------------------------------------------------------------------------------
+   453→  // SENDER: queue + stream files striped across parallel channels.
+   454→  // --------------------------------------------------------------------------------------
+   455→  queueFiles(files: File[]) {
+   456→    this.sendQueue.push(...files);
+   457→  }
+   458→
+   459→  private async sendQueuedFiles() {
+   460→    if (this.sending) return;
+   461→    this.sending = true;
+   462→    try {
+   463→      const ctrl = this.ctrlCh;
+   464→      if (!ctrl || ctrl.readyState !== "open") throw new Error("Control channel not ready");
+   465→
+   466→      // Announce the file manifest first (on the control channel).
+   467→      const manifest: IncomingFile[] = this.sendQueue.map((f, i) => ({
+   468→        id: `${Date.now()}-${i}`,
+   469→        name: f.name || `file-${i + 1}`,
+   470→        size: f.size,
+   471→        mime: f.type || undefined,
+   472→      }));
+   473→      ctrl.send(JSON.stringify({ type: "meta", files: manifest } satisfies ControlMessage));
+   474→
+   475→      for (let i = 0; i < this.sendQueue.length; i++) {
+   476→        const file = this.sendQueue[i];
+   477→        const meta = manifest[i];
+   478→        const seq = i; // numeric file sequence — used in the binary header
+   479→        if (ctrl.readyState !== "open") return;
+   480→
+   481→        // Tell the receiver a file is starting (with its seq for header matching).
+   482→        ctrl.send(
+   483→          JSON.stringify({
+   484→            type: "file-start",
+   485→            seq,
+   486→            id: meta.id,
+   487→            name: meta.name,
+   488→            size: meta.size,
+   489→            mime: meta.mime,
+   490→          } satisfies ControlMessage),
+   491→        );
+   492→        this.onFileStart?.(meta);
+   493→
+   494→        let offset = 0;
+   495→        let chunkIndex = 0;
+   496→        while (offset < file.size) {
+   497→          // Pick the next data channel round-robin (striping).
+   498→          const chIdx = chunkIndex % NUM_DATA_CHANNELS;
+   499→          const dc = this.dataChannels[chIdx];
+   500→          // BACKPRESSURE: wait if this channel's buffer is full.
+   501→          while (dc.bufferedAmount > HIGH_WATERMARK) {
+   502→            await this.waitForLowBuffer(dc);
+   503→            if (dc.readyState !== "open") return;
+   504→          }
+   505→          const slice = file.slice(offset, offset + CHUNK_SIZE);
+   506→          const fileData = await slice.arrayBuffer();
+   507→
+   508→          // Build the self-describing message: [8-byte header][file data]
+   509→          const msg = new ArrayBuffer(HEADER_BYTES + fileData.byteLength);
+   510→          const mdv = new DataView(msg);
+   511→          mdv.setUint32(0, seq, false); // big-endian fileSeq
+   512→          mdv.setUint32(4, chunkIndex, false); // big-endian chunkIndex
+   513→          new Uint8Array(msg, HEADER_BYTES).set(new Uint8Array(fileData));
+   514→
+   515→          try {
+   516→            dc.send(msg);
+   517→          } catch (e) {
+   518→            return;
+   519→          }
+   520→          offset += fileData.byteLength;
+   521→          chunkIndex++;
+   522→          if (chunkIndex % 20 === 0) {
+   523→          }
+   524→          this.onFileProgress?.(meta.id, offset, meta.size);
+   525→        }
+   526→
+   527→        // Tell the receiver this file is done — they reassemble + create the blob.
+   528→        // The sender does NOT fire onFileComplete here (no URL on the sender side;
+   529→        // only the receiver has the assembled blob). The receiver's finalizeFile
+   530→        // will fire onFileComplete with a real URL once all chunks arrive.
+   531→        ctrl.send(JSON.stringify({ type: "file-end", seq } satisfies ControlMessage));
+   532→      }
+   533→
+   534→      ctrl.send(JSON.stringify({ type: "done" } satisfies ControlMessage));
+   535→      this.onAllComplete?.();
+   536→    } finally {
+   537→      this.sending = false;
+   538→    }
+   539→  }
+   540→
+   541→  /**
+   542→   * Receiver: wait for all expected chunks to arrive, then reassemble into a
+   543→   * Blob + fire onFileComplete. Handles the case where the ordered control
+   544→   * channel's file-end arrives before the unordered data channels finish
+   545→   * delivering chunks — polls up to ~3s, then finalizes with whatever's there.
+   546→   *
+   547→   * CRITICAL: We set `entry.finalized = true` IMMEDIATELY after the guard
+   548→   * check, BEFORE any `await`. This prevents the race where two concurrent
+   549→   * callers (one from `handleChunkMessage`'s auto-finalize trigger, one from
+   550→   * `handleControlMessage`'s file-end) both pass the guard, both run the
+   551→   * polling loop, both reassemble, and both fire `onFileComplete` — leaking
+   552→   * a blob URL and confusing the React state.
+   553→   */
+   554→  private async finalizeFile(seq: number) {
+   555→    const entry = this.incoming.get(seq);
+   556→    if (!entry || entry.finalized) return;
+   557→    entry.finalized = true; // ← claim now, before any await
+   558→
+   559→    // Skip polling entirely if we've already received all expected bytes (the
+   560→    // happy path), OR if the file is empty (no chunks will ever arrive). Both
+   561→    // are common cases — polling them just delays the URL by 3s.
+   562→    const needsPoll = entry.received < entry.file.size && entry.count < entry.expectedCount;
+   563→    if (needsPoll) {
+   564→      const deadline = Date.now() + 3000;
+   565→      while (entry.count < entry.expectedCount && Date.now() < deadline) {
+   566→        await new Promise((r) => setTimeout(r, 20));
+   567→      }
+   568→    }
+   569→    // Reassemble in index order.
+   570→    const ordered: ArrayBuffer[] = [];
+   571→    for (let i = 0; i < entry.count; i++) {
+   572→      const c = entry.chunks.get(i);
+   573→      if (c) ordered.push(c);
+   574→    }
+   575→    const blob = new Blob(ordered, { type: entry.file.mime || "application/octet-stream" });
+   576→    const url = URL.createObjectURL(blob);
+   577→    entry.url = url;
+   578→    this.onFileComplete?.(entry.file, url);
+   579→  }
+   580→
+   581→  /** Wait until a data channel's send buffer drops below LOW_WATERMARK.
+   582→   *  Hardened: resolves on the bufferedamountlow event, OR on a 5s timeout,
+   583→   *  OR if the channel closes — so the sender can never hang forever waiting
+   584→   *  on a channel that died mid-transfer. */
+   585→  private waitForLowBuffer(dc: RTCDataChannel): Promise<void> {
+   586→    return new Promise((resolve) => {
+   587→      let done = false;
+   588→      const finish = () => {
+   589→        if (done) return;
+   590→        done = true;
+   591→        dc.removeEventListener("bufferedamountlow", onLow);
+   592→        dc.removeEventListener("close", onClose);
+   593→        clearTimeout(timer);
+   594→        resolve();
+   595→      };
+   596→      const onLow = () => finish();
+   597→      const onClose = () => finish();
+   598→      const timer = setTimeout(finish, 5000);
+   599→      dc.addEventListener("bufferedamountlow", onLow, { once: true });
+   600→      dc.addEventListener("close", onClose, { once: true });
+   601→    });
+   602→  }
+   603→
+   604→  // --------------------------------------------------------------------------------------
+   605→  // ICE candidate-type logging — which path won? (host/srflx = fast, relay = slow)
+   606→  // --------------------------------------------------------------------------------------
+   607→  private logSelectedCandidateType() {
+   608→    if (this.loggedWinner || !this.pc) return;
+   609→    this.loggedWinner = true;
+   610→    this.pc.getStats().then((stats) => {
+   611→      stats.forEach((s) => {
+   612→        if (s.type === "candidate-pair" && (s as RTCIceCandidatePairStats).nominated) {
+   613→          const cp = s as RTCIceCandidatePairStats & {
+   614→            localCandidateId?: string;
+   615→            remoteCandidateId?: string;
+   616→          };
+   617→          const local = cp.localCandidateId ? stats.get(cp.localCandidateId) : undefined;
+   618→          const lt = (local as RTCIceCandidateStats | undefined)?.candidateType;
+   619→          const winner = (lt as "host" | "srflx" | "prflx" | "relay" | undefined) ?? "unknown";
+   620→          console.log(`[beam-webrtc] ICE selected: local=${lt} → winner=${winner}`);
+   621→          this.onCandidateType?.(winner as "host" | "srflx" | "prflx" | "relay" | "unknown");
+   622→        }
+   623→      });
+   624→    }).catch(() => {});
+   625→  }
+   626→
+   627→  // --------------------------------------------------------------------------------------
+   628→  // Connection-quality sampling (RTT → 0..4)
+   629→  // --------------------------------------------------------------------------------------
+   630→  private startQualityPolling() {
+   631→    this.stopQualityPolling();
+   632→    void this.sampleQuality();
+   633→    this.statsTimer = setInterval(() => void this.sampleQuality(), 2000);
+   634→  }
+   635→
+   636→  private stopQualityPolling() {
+   637→    if (this.statsTimer) { clearInterval(this.statsTimer); this.statsTimer = null; }
+   638→  }
+   639→
+   640→  private async sampleQuality() {
+   641→    const pc = this.pc;
+   642→    if (!pc || pc.connectionState !== "connected") return;
+   643→    let stats: RTCStatsReport;
+   644→    try {
+   645→      stats = await pc.getStats();
+   646→    } catch {
+   647→      return;
+   648→    }
+   649→    let rtt: number | null = null;
+   650→    stats.forEach((s) => {
+   651→      if (s.type === "candidate-pair" && (s as RTCIceCandidatePairStats).nominated) {
+   652→        const cp = s as RTCIceCandidatePairStats & { currentRoundTripTime?: number };
+   653→        if (typeof cp.currentRoundTripTime === "number") rtt = cp.currentRoundTripTime * 1000;
+   654→      }
+   655→    });
+   656→    let level = 2;
+   657→    if (rtt === null) level = 3;
+   658→    else if (rtt < 40) level = 4;
+   659→    else if (rtt < 120) level = 3;
+   660→    else if (rtt < 300) level = 2;
+   661→    else level = 1;
+   662→    this.onQuality?.(level);
+   663→  }
+   664→
+   665→  // --------------------------------------------------------------------------------------
+   666→  // Receiver: revoke an object URL when done with it.
+   667→  // --------------------------------------------------------------------------------------
+   668→  releaseFile(id: string) {
+   669→    for (const entry of this.incoming.values()) {
+   670→      if (entry.file.id === id) {
+   671→        if (entry.url) URL.revokeObjectURL(entry.url);
+   672→        this.incoming.delete(entry.file.id as unknown as number);
+   673→        break;
+   674→      }
+   675→    }
+   676→  }
+   677→
+   678→  releaseAll() {
+   679→    for (const entry of this.incoming.values()) {
+   680→      if (entry.url) URL.revokeObjectURL(entry.url);
+   681→    }
+   682→    this.incoming.clear();
+   683→  }
+   684→
+   685→  /**
+   686→   * Look up the object URL for a given file ID, if finalizeFile has run.
+   687→   * Used by the React hook's safety net to recover URLs that were created
+   688→   * AFTER onFileComplete fired (e.g., text-fetch path was still pending when
+   689→   * onAllComplete marked the file done without a URL).
+   690→   */
+   691→  getFinalizedUrl(id: string): string | undefined {
+   692→    for (const entry of this.incoming.values()) {
+   693→      if (entry.file.id === id && entry.finalized) return entry.url;
+   694→    }
+   695→    return undefined;
+   696→  }
+   697→
+   698→  cancel() {
+   699→    if (this.ctrlCh && this.ctrlCh.readyState === "open") {
+   700→      try { this.ctrlCh.send(JSON.stringify({ type: "cancel" } satisfies ControlMessage)); } catch { /* ignore */ }
+   701→    }
+   702→    this.close();
+   703→  }
+   704→
+   705→  /** Tear down. Detaches callbacks first so intentional close isn't a spurious error. */
+   706→  close() {
+   707→    this.sending = false;
+   708→    this.stopQualityPolling();
+   709→    if (this.reconnectTimer) {
+   710→      clearTimeout(this.reconnectTimer);
+   711→      this.reconnectTimer = null;
+   712→    }
+   713→    if (this.iceConnectTimer) {
+   714→      clearTimeout(this.iceConnectTimer);
+   715→      this.iceConnectTimer = null;
+   716→    }
+   717→    if (this.reconnectingFailTimer) {
+   718→      clearTimeout(this.reconnectingFailTimer);
+   719→      this.reconnectingFailTimer = null;
+   720→    }
+   721→    if (this.channelOpenTimer) {
+   722→      clearTimeout(this.channelOpenTimer);
+   723→      this.channelOpenTimer = null;
+   724→    }
+   725→    if (this.pc) {
+   726→      this.pc.onicecandidate = null;
+   727→      this.pc.oniceconnectionstatechange = null;
+   728→      this.pc.ondatachannel = null;
+   729→    }
+   730→    for (const ch of [this.ctrlCh, ...this.dataChannels]) {
+   731→      if (ch) { ch.onopen = null; ch.onclose = null; ch.onmessage = null; }
+   732→    }
+   733→    try { this.ctrlCh?.close(); } catch { /* ignore */ }
+   734→    for (const ch of this.dataChannels) { try { ch.close(); } catch { /* ignore */ } }
+   735→    try { this.pc?.close(); } catch { /* ignore */ }
+   736→    this.ctrlCh = null;
+   737→    this.dataChannels = [];
+   738→    this.pc = null;
+   739→    this.channelsOpen = 0;
+   740→    this.isReconnecting = false;
+   741→  }
+   742→}
+   743→

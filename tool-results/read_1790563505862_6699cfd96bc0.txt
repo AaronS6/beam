@@ -1,0 +1,952 @@
+     1→"use client";
+     2→
+     3→/**
+     4→ * useBeamSession — orchestrates the signaling + WebRTC lifecycle (Path A) AND
+     5→ * the temporary-storage fallback (Path B), exposing a single state object.
+     6→ *
+     7→ * Path A (default): true peer-to-peer over parallel WebRTC DataChannels.
+     8→ *   Nothing is stored anywhere. QR/session expires after 5 min if no peer connects.
+     9→ * Path B (opt-in "Store temporarily"): files upload once to encrypted server
+    10→ *   storage; auto-delete within 5 min OR the instant the receiver finishes
+    11→ *   downloading — one-time-use. The backend enforces both ceilings; the client
+    12→ *   countdown is just a courtesy.
+    13→ */
+    14→
+    15→import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+    16→import { SignalingClient } from "@/lib/signaling";
+    17→import {
+    18→  BeamTransfer,
+    19→  getIceServers,
+    20→  type IncomingFile,
+    21→  type TransferState,
+    22→} from "@/lib/webrtc";
+    23→import { genSessionId, deviceInfo, detectDevice, type DeviceDescriptor } from "@/lib/format";
+    24→
+    25→export type FileItem = {
+    26→  id: string;
+    27→  name: string;
+    28→  size: number;
+    29→  mime?: string;
+    30→  received: number;
+    31→  status: "queued" | "transferring" | "done" | "error";
+    32→  url?: string;
+    33→  text?: string;
+    34→  imageUrl?: string;
+    35→};
+    36→
+    37→export type Phase = TransferState | "expired";
+    38→
+    39→/** 5-minute ceiling for both paths (Path A session idle, Path B storage). */
+    40→const SESSION_TTL_MS = 5 * 60 * 1000;
+    41→/** Debounce for "peer-left" events. socket.io auto-reconnects on transient
+    42→ *  network blips — killing the session immediately on the first disconnect
+    43→ *  is the #1 cause of "stuck at connecting" when the user's wifi flutters.
+    44→ *  We wait this long to see if the peer rejoins before showing an error. */
+    45→const PEER_LEFT_GRACE_MS = 3000;
+    46→
+    47→export type SessionState = {
+    48→  mode: "sender" | "receiver";
+    49→  phase: Phase;
+    50→  sessionId: string | null;
+    51→  qrUrl: string | null;
+    52→  peerDevice: DeviceDescriptor | null;
+    53→  files: FileItem[];
+    54→  totalBytes: number;
+    55→  receivedBytes: number;
+    56→  speed: number;
+    57→  error: string | null;
+    58→  createdAt: number | null;
+    59→  quality: number;
+    60→  transferStartedAt: number | null;
+    61→  transferEndedAt: number | null;
+    62→  peakSpeed: number;
+    63→  candidateType: "host" | "srflx" | "prflx" | "relay" | "unknown" | null;
+    64→  /** Whether Path B (server storage) is available on this host. False on
+    65→   *  serverless hosts (Vercel) with no persistent disk → "Store temporarily"
+    66→   *  toggle is hidden. */
+    67→  /** Path B: epoch ms when stored files expire (createdAt + 5 min). Null on Path A. */
+    68→  /** Nearby devices seen via the lobby (presence). Sender can tap one to send. */
+    69→  nearby: { socketId: string; label: string; short: string }[];
+    70→};
+    71→
+    72→const INITIAL: SessionState = {
+    73→  mode: "sender",
+    74→  phase: "idle",
+    75→  sessionId: null,
+    76→  qrUrl: null,
+    77→  peerDevice: null,
+    78→  files: [],
+    79→  totalBytes: 0,
+    80→  receivedBytes: 0,
+    81→  speed: 0,
+    82→  error: null,
+    83→  createdAt: null,
+    84→  quality: 0,
+    85→  transferStartedAt: null,
+    86→  transferEndedAt: null,
+    87→  peakSpeed: 0,
+    88→  candidateType: null,
+    89→  nearby: [],
+    90→};
+    91→
+    92→export function useBeamSession(sessionIdParam?: string | null) {
+    93→  const mode: "sender" | "receiver" = sessionIdParam ? "receiver" : "sender";
+    94→
+    95→  const [state, setState] = useState<SessionState>({
+    96→    ...INITIAL,
+    97→    mode,
+    98→    phase: mode === "receiver" ? "waiting" : "idle",
+    99→    sessionId: mode === "receiver" ? sessionIdParam! : null,
+   100→  });
+   101→
+   102→  const signalingRef = useRef<SignalingClient | null>(null);
+   103→  const lobbyRef = useRef<SignalingClient | null>(null);
+   104→  const transferRef = useRef<BeamTransfer | null>(null);
+   105→  const rawFilesRef = useRef<File[]>([]);
+   106→  const sessionIdRef = useRef<string | null>(mode === "receiver" ? sessionIdParam ?? null : null);
+   107→  const speedRef = useRef({ lastTs: 0, lastBytes: 0, ema: 0 });
+   108→  const reconnectPrevPhase = useRef<Phase | null>(null);
+   109→  // Stashed nearby target: when the user taps a nearby device before picking
+   110→  // files, we store the target here, open the file picker, and auto-send to
+   111→  // them once files are chosen (in beginSending).
+   112→  const pendingNearbyRef = useRef<{ socketId: string; deviceLabel?: string } | null>(null);
+   113→  // peer-left debounce timer — socket.io auto-reconnects, so a brief signaling
+   114→  // disconnect shouldn't immediately kill the session. We wait PEER_LEFT_GRACE_MS
+   115→  // to see if the peer comes back; if they do (server re-emits peer-joined),
+   116→  // we cancel the timer and the user keeps their transfer.
+   117→  const peerLeftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+   118→
+   119→  const patch = useCallback((p: Partial<SessionState>) => {
+   120→    setState((s) => ({ ...s, ...p }));
+   121→  }, []);
+   122→
+   123→  /** Schedule a peer-left error after PEER_LEFT_GRACE_MS. If a peer-joined /
+   124→   *  session-joined / re-join event arrives before the timer fires, cancel it
+   125→   *  so the user keeps their transfer across brief signaling socket blips. */
+   126→  const schedulePeerLeftError = useCallback((errorMsg: string) => {
+   127→    if (peerLeftTimerRef.current) clearTimeout(peerLeftTimerRef.current);
+   128→    peerLeftTimerRef.current = setTimeout(() => {
+   129→      peerLeftTimerRef.current = null;
+   130→      setState((s) =>
+   131→        s.phase === "done" || s.phase === "error"
+   132→          ? s
+   133→          : { ...s, phase: "error", error: errorMsg },
+   134→      );
+   135→    }, PEER_LEFT_GRACE_MS);
+   136→  }, []);
+   137→
+   138→  /** Cancel a pending peer-left error — called whenever we get evidence the
+   139→   *  peer is back (peer-joined, session-joined, any signal received). */
+   140→  const cancelPeerLeftError = useCallback(() => {
+   141→    if (peerLeftTimerRef.current) {
+   142→      clearTimeout(peerLeftTimerRef.current);
+   143→      peerLeftTimerRef.current = null;
+   144→    }
+   145→  }, []);
+   146→
+   147→  useEffect(() => {
+   148→    sessionIdRef.current = state.sessionId;
+   149→  }, [state.sessionId]);
+   150→
+   151→
+   152→
+   153→  // ---- Lobby / nearby-device presence ----
+   154→  // Every device (sender OR receiver) joins the lobby so others can discover
+   155→  // it. The lobby client is separate from the session signaling client so it
+   156→  // can stay alive across session lifecycle changes.
+   157→  useEffect(() => {
+   158→    const lobby = new SignalingClient();
+   159→    lobbyRef.current = lobby;
+   160→    const myDevice = deviceInfo();
+   161→    lobby.onConnect = () => lobby.joinLobby(myDevice);
+   162→    // Re-join on reconnect (socket.io auto-reconnects; re-announce presence)
+   163→    lobby.onDisconnect = () => {
+   164→      // Clear the nearby list on disconnect — will repopulate on reconnect
+   165→      setState((s) => ({ ...s, nearby: [] }));
+   166→    };
+   167→    lobby.onLobbyList = (devices) => {
+   168→      // Fully REPLACE the nearby list (authoritative snapshot from server)
+   169→      const seen = new Set<string>();
+   170→      const deduped = devices.filter((d) => {
+   171→        if (seen.has(d.socketId)) return false;
+   172→        seen.add(d.socketId);
+   173→        return true;
+   174→      }).map((d) => ({
+   175→        socketId: d.socketId,
+   176→        label: d.device.name ?? "a device",
+   177→        short: d.device.platform ?? "",
+   178→      }));
+   179→      setState((s) => ({ ...s, nearby: deduped }));
+   180→    };
+   181→    lobby.onLobbyUpdate = (evt) => {
+   182→      setState((s) => {
+   183→        if (evt.kind === "join") {
+   184→          // Deduplicate: if this socketId is already in the list, update its
+   185→          // info rather than adding a duplicate.
+   186→          const exists = s.nearby.some((n) => n.socketId === evt.socketId);
+   187→          if (exists) {
+   188→            return {
+   189→              ...s,
+   190→              nearby: s.nearby.map((n) =>
+   191→                n.socketId === evt.socketId
+   192→                  ? { ...n, label: evt.device?.name ?? n.label, short: evt.device?.platform ?? n.short }
+   193→                  : n,
+   194→              ),
+   195→            };
+   196→          }
+   197→          return {
+   198→            ...s,
+   199→            nearby: [
+   200→              ...s.nearby,
+   201→              {
+   202→                socketId: evt.socketId,
+   203→                label: evt.device?.name ?? "a device",
+   204→                short: evt.device?.platform ?? "",
+   205→              },
+   206→            ],
+   207→          };
+   208→        }
+   209→        return { ...s, nearby: s.nearby.filter((n) => n.socketId !== evt.socketId) };
+   210→      });
+   211→    };
+   212→    lobby.onInvite = (payload) => {
+   213→      // A nearby sender picked THIS device to receive files. Auto-accept:
+   214→      // join their session via a SEPARATE SignalingClient (not the lobby socket)
+   215→      // so the session handlers don't collide with lobby presence handlers.
+   216→      const sid = payload.sessionId;
+   217→      const inviter = payload.device?.name ?? "a device";
+   218→      setState((s) => ({
+   219→        ...s,
+   220→        mode: "receiver" as const,
+   221→        sessionId: sid,
+   222→        peerDevice: { label: inviter, short: payload.device?.platform ?? "" },
+   223→        phase: "waiting" as const,
+   224→        files: (payload.files ?? []).map((f, i) => ({
+   225→          id: `inv-${i}`,
+   226→          name: f.name,
+   227→          size: f.size,
+   228→          mime: f.mime,
+   229→          received: 0,
+   230→          status: "queued" as const,
+   231→        })),
+   232→        totalBytes: (payload.files ?? []).reduce((a, b) => a + b.size, 0),
+   233→        receivedBytes: 0,
+   234→        error: null,
+   235→      }));
+   236→      // Use a SEPARATE SignalingClient for the session (not the lobby socket).
+   237→      const sessionSignaling = new SignalingClient();
+   238→      signalingRef.current = sessionSignaling;
+   239→      sessionSignaling.onConnect = () => sessionSignaling.joinSession(sid, deviceInfo());
+   240→      sessionSignaling.onSessionJoined = ({ sender }) => {
+   241→        cancelPeerLeftError();
+   242→        patch({ phase: "waiting", peerDevice: sender?.name ? { label: sender.name, short: sender.platform ?? "" } : null });
+   243→      };
+   244→      sessionSignaling.onSignal = (sigdata) => {
+   245→        cancelPeerLeftError();
+   246→        let transfer = transferRef.current;
+   247→        if (!transfer) {
+   248→          transfer = makeTransfer("receiver", sid, sessionSignaling, patch, setState, reconnectPrevPhase);
+   249→          transferRef.current = transfer;
+   250→        }
+   251→        void transfer.handleSignal(sigdata);
+   252→      };
+   253→      sessionSignaling.onPeerLeft = () => {
+   254→        schedulePeerLeftError("The other device disconnected.");
+   255→      };
+   256→      sessionSignaling.onSessionExpired = () => patch({ phase: "expired" });
+   257→      sessionSignaling.onError = (msg) => patch({ error: msg });
+   258→    };
+   259→    return () => {
+   260→      lobby.leaveLobby();
+   261→      lobby.disconnect();
+   262→      lobbyRef.current = null;
+   263→    };
+   264→  }, [patch, cancelPeerLeftError, schedulePeerLeftError]);
+   265→
+   266→  // ---- Speed sampler (tracks peak too) ----
+   267→  useEffect(() => {
+   268→    const t = setInterval(() => {
+   269→      setState((s) => {
+   270→        if (s.phase !== "transferring" && s.phase !== "reconnecting") {
+   271→          return s.speed === 0 ? s : { ...s, speed: 0 };
+   272→        }
+   273→        const now = performance.now();
+   274→        const sr = speedRef.current;
+   275→        if (sr.lastTs === 0) { sr.lastTs = now; sr.lastBytes = s.receivedBytes; return s; }
+   276→        const dt = (now - sr.lastTs) / 1000;
+   277→        if (dt < 0.4) return s;
+   278→        const dB = s.receivedBytes - sr.lastBytes;
+   279→        const inst = dt > 0 ? dB / dt : 0;
+   280→        sr.ema = sr.ema === 0 ? inst : sr.ema * 0.7 + inst * 0.3;
+   281→        sr.lastTs = now;
+   282→        sr.lastBytes = s.receivedBytes;
+   283→        const peakSpeed = Math.max(s.peakSpeed, sr.ema);
+   284→        return { ...s, speed: sr.ema, peakSpeed };
+   285→      });
+   286→    }, 400);
+   287→    return () => clearInterval(t);
+   288→  }, []);
+   289→
+   290→  // ---- Path A: 5-min session-expiry countdown (no peer → expire) ----
+   291→  useEffect(() => {
+   292→    if (mode !== "sender") return;
+   293→    if (state.phase !== "waiting") return;
+   294→    if (!state.createdAt) return;
+   295→    const expiry = state.createdAt + SESSION_TTL_MS;
+   296→    const t = setInterval(() => {
+   297→      if (Date.now() >= expiry) {
+   298→        // Expire the session locally + tell signaling to leave.
+   299→        signalingRef.current?.leaveSession(state.sessionId ?? "");
+   300→        patch({ phase: "expired" });
+   301→      }
+   302→    }, 1000);
+   303→    return () => clearInterval(t);
+   304→  }, [mode, state.phase, state.createdAt, state.sessionId, patch]);
+   305→
+   306→  // ---- Receiver: auto-join the signaling session on mount ----
+   307→  useEffect(() => {
+   308→    if (mode !== "receiver" || !sessionIdParam) return;
+   309→
+   310→    let cancelled = false;
+   311→    const signaling = new SignalingClient();
+   312→    signalingRef.current = signaling;
+   313→    signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
+   314→    signaling.onSessionJoined = ({ sender }) => {
+   315→      cancelPeerLeftError();
+   316→      patch({
+   317→        phase: "waiting",
+   318→        peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
+   319→      });
+   320→    };
+   321→    signaling.onError = (msg) => {
+   322→      if (/not found|expired/i.test(msg)) patch({ phase: "expired", error: msg });
+   323→      else patch({ error: msg });
+   324→    };
+   325→    signaling.onSessionExpired = () => patch({ phase: "expired" });
+   326→    signaling.onPeerLeft = () => {
+   327→      // Don't immediately error — wait PEER_LEFT_GRACE_MS for the peer to
+   328→      // come back. Brief signaling disconnects are common on mobile.
+   329→      schedulePeerLeftError("The other device disconnected.");
+   330→    };
+   331→    signaling.onSignal = (sigdata) => {
+   332→      cancelPeerLeftError();
+   333→      let transfer = transferRef.current;
+   334→      if (!transfer) {
+   335→        transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
+   336→        transferRef.current = transfer;
+   337→      }
+   338→      void transfer.handleSignal(sigdata);
+   339→    };
+   340→
+   341→    return () => {
+   342→      cancelled = true;
+   343→      transferRef.current?.releaseAll();
+   344→      transferRef.current?.close();
+   345→      signaling.disconnect();
+   346→      transferRef.current = null;
+   347→      signalingRef.current = null;
+   348→    };
+   349→  }, [mode, sessionIdParam, cancelPeerLeftError, schedulePeerLeftError]);
+   350→
+   351→  // ---- Sender actions ----
+   352→  const sendToNearbyRef = useRef<((socketId: string, deviceLabel?: string) => void) | null>(null);
+   353→
+   354→  const beginSending = useCallback(
+   355→    (files: File[]) => {
+   356→      if (files.length === 0) return;
+   357→      rawFilesRef.current = files;
+   358→
+   359→      // If the user tapped a nearby device before picking files, auto-send to
+   360→      // them now (instead of showing the QR code).
+   361→      const pending = pendingNearbyRef.current;
+   362→      if (pending) {
+   363→        pendingNearbyRef.current = null;
+   364→        sendToNearbyRef.current?.(pending.socketId, pending.deviceLabel);
+   365→        return;
+   366→      }
+   367→
+   368→      const items: FileItem[] = files.map((f, i) => ({
+   369→        id: `${Date.now()}-${i}`,
+   370→        name: f.name || `file-${i + 1}`,
+   371→        size: f.size,
+   372→        mime: f.type || undefined,
+   373→        received: 0,
+   374→        status: "queued",
+   375→        imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
+   376→      }));
+   377→      const total = items.reduce((a, b) => a + b.size, 0);
+   378→
+   379→      const sessionId = genSessionId();
+   380→      sessionIdRef.current = sessionId;
+   381→      const origin = typeof window !== "undefined" ? window.location.origin : "https://beam.app";
+   382→      const qrUrl = `${origin}/?r=${sessionId}`;
+   383→      const now = Date.now();
+   384→
+   385→      patch({
+   386→        sessionId,
+   387→        qrUrl,
+   388→        files: items,
+   389→        totalBytes: total,
+   390→        receivedBytes: 0,
+   391→        phase: "waiting",
+   392→        error: null,
+   393→        createdAt: now,
+   394→      });
+   395→
+   396→      transferRef.current?.close();
+   397→      transferRef.current = null;
+   398→
+   399→      // ---- PATH A: peer-to-peer via signaling + WebRTC ----
+   400→      const signaling = new SignalingClient();
+   401→      signalingRef.current = signaling;
+   402→      speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
+   403→
+   404→      signaling.onConnect = () => signaling.createSession(sessionId, deviceInfo());
+   405→      signaling.onSessionCreated = ({ createdAt }) => patch({ createdAt });
+   406→      signaling.onPeerJoined = ({ receiver }) => {
+   407→        const sid = sessionIdRef.current ?? sessionId;
+   408→        // Peer came back (or joined fresh) — cancel any pending peer-left
+   409→        // error that was queued during a brief signaling disconnect.
+   410→        cancelPeerLeftError();
+   411→        patch({
+   412→          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+   413→          // Transition to "connecting" so the sender UI shows "Connecting…"
+   414→          // instead of the QR code while ICE is negotiating. Previously the
+   415→          // sender stayed in "waiting" (showing the QR) for the entire 5-30s
+   416→          // ICE negotiation, which looked like the connection wasn't taking.
+   417→          phase: "connecting",
+   418→        });
+   419→        const transfer = makeTransfer("sender", sid, signaling, patch, setState, reconnectPrevPhase);
+   420→        transfer.queueFiles(rawFilesRef.current);
+   421→        transferRef.current = transfer;
+   422→        void transfer.createOffer();
+   423→      };
+   424→      signaling.onSignal = (data) => {
+   425→        // Any signal from the peer means they're alive — cancel pending errors.
+   426→        cancelPeerLeftError();
+   427→        transferRef.current?.handleSignal(data);
+   428→      };
+   429→      signaling.onPeerLeft = () => {
+   430→        // Don't immediately go to error — socket.io auto-reconnects on brief
+   431→        // network blips. Wait PEER_LEFT_GRACE_MS for the peer to come back.
+   432→        schedulePeerLeftError("The receiver disconnected before the transfer finished.");
+   433→      };
+   434→      signaling.onSessionExpired = () => patch({ phase: "expired" });
+   435→      signaling.onError = (msg) => patch({ error: msg });
+   436→      void getIceServers;
+   437→    },
+   438→    [patch, cancelPeerLeftError, schedulePeerLeftError],
+   439→  );
+   440→
+   441→  /** Sender: pick a nearby device (by socketId) to send the selected files to.
+   442→   *  Creates a session + sends an invite; when the invitee joins, the WebRTC
+   443→   *  offer flow runs just like the QR path. Uses a SEPARATE SignalingClient
+   444→   *  for the session (not the lobby socket) so handlers don't collide. */
+   445→  const sendToNearby = useCallback(
+   446→    (socketId: string, deviceLabel?: string) => {
+   447→      const files = rawFilesRef.current;
+   448→      // If no files selected yet, open the file picker. Once the user picks
+   449→      // files, beginSending() runs — but we stash the intended nearby target
+   450→      // so we can auto-send to them right after.
+   451→      if (files.length === 0) {
+   452→        pendingNearbyRef.current = { socketId, deviceLabel };
+   453→        if (typeof document !== "undefined") {
+   454→          const input = document.querySelector<HTMLInputElement>('input[type="file"]');
+   455→          input?.click();
+   456→        }
+   457→        return;
+   458→      }
+   459→      const lobby = lobbyRef.current;
+   460→      if (!lobby || !lobby.connected) {
+   461→        patch({ error: "Not connected to nearby discovery yet — try again in a moment." });
+   462→        return;
+   463→      }
+   464→      const sessionId = genSessionId();
+   465→      sessionIdRef.current = sessionId;
+   466→      const now = Date.now();
+   467→      const items: FileItem[] = files.map((f, i) => ({
+   468→        id: `${now}-${i}`,
+   469→        name: f.name || `file-${i + 1}`,
+   470→        size: f.size,
+   471→        mime: f.type || undefined,
+   472→        received: 0,
+   473→        status: "queued",
+   474→        imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
+   475→      }));
+   476→      const total = items.reduce((a, b) => a + b.size, 0);
+   477→      patch({
+   478→        sessionId,
+   479→        qrUrl: null, // no QR for nearby send
+   480→        files: items,
+   481→        totalBytes: total,
+   482→        receivedBytes: 0,
+   483→        phase: "waiting",
+   484→        error: null,
+   485→        createdAt: now,
+   486→        peerDevice: deviceLabel ? { label: deviceLabel, short: "" } : null,
+   487→      });
+   488→
+   489→      transferRef.current?.close();
+   490→      transferRef.current = null;
+   491→
+   492→      // Use a SEPARATE SignalingClient for the session (NOT the lobby socket).
+   493→      // This prevents handler collisions between lobby presence + session signaling.
+   494→      const signaling = new SignalingClient();
+   495→      signalingRef.current = signaling;
+   496→      speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
+   497→
+   498→      signaling.onConnect = () => {
+   499→        signaling.createSession(sessionId, deviceInfo());
+   500→      };
+   501→      signaling.onSessionCreated = () => {
+   502→        // Session is created — now invite the target device via the LOBBY socket.
+   503→        // The invitee's lobby onInvite handler will make them join this session.
+   504→        lobby.invite(socketId, sessionId, deviceInfo(), items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })));
+   505→      };
+   506→      signaling.onPeerJoined = ({ receiver }) => {
+   507→        cancelPeerLeftError();
+   508→        patch({
+   509→          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+   510→          // Transition to "connecting" — see QR-path comment above.
+   511→          phase: "connecting",
+   512→        });
+   513→        const transfer = makeTransfer("sender", sessionId, signaling, patch, setState, reconnectPrevPhase);
+   514→        transfer.queueFiles(rawFilesRef.current);
+   515→        transferRef.current = transfer;
+   516→        void transfer.createOffer();
+   517→      };
+   518→      signaling.onSignal = (data) => {
+   519→        cancelPeerLeftError();
+   520→        transferRef.current?.handleSignal(data);
+   521→      };
+   522→      signaling.onPeerLeft = () => {
+   523→        schedulePeerLeftError("The other device disconnected before the transfer finished.");
+   524→      };
+   525→      signaling.onSessionExpired = () => patch({ phase: "expired" });
+   526→      signaling.onError = (msg) => patch({ error: msg });
+   527→      void getIceServers;
+   528→    },
+   529→    [patch, cancelPeerLeftError, schedulePeerLeftError],
+   530→  );
+   531→  // Keep the ref current so beginSending can call it without a forward-ref issue.
+   532→  // Must run in an effect (not during render) per React's ref rules.
+   533→  useEffect(() => { sendToNearbyRef.current = sendToNearby; }, [sendToNearby]);
+   534→
+   535→
+   536→  // ---- Queue management (Path A sender, while waiting) ----
+   537→  const removeFile = useCallback((id: string) => {
+   538→    setState((s) => {
+   539→      if (s.phase !== "waiting" && s.phase !== "connected") return s;
+   540→      const idx = s.files.findIndex((f) => f.id === id);
+   541→      if (idx === -1) return s;
+   542→      const files = s.files.filter((f) => f.id !== id);
+   543→      rawFilesRef.current = rawFilesRef.current.filter((_, i) => i !== idx);
+   544→      const totalBytes = files.reduce((a, b) => a + b.size, 0);
+   545→      if (files.length === 0) {
+   546→        transferRef.current?.close();
+   547→        transferRef.current = null;
+   548→        signalingRef.current?.disconnect();
+   549→        signalingRef.current = null;
+   550→        return { ...s, ...INITIAL, mode: s.mode };
+   551→      }
+   552→      return { ...s, files, totalBytes };
+   553→    });
+   554→  }, []);
+   555→
+   556→  const addMoreFiles = useCallback((more: File[]) => {
+   557→    if (more.length === 0) return;
+   558→    setState((s) => {
+   559→      if (s.phase !== "waiting" && s.phase !== "connected") return s;
+   560→      const extra: FileItem[] = more.map((f, i) => ({
+   561→        id: `${Date.now()}-${s.files.length + i}`,
+   562→        name: f.name || `file-${s.files.length + i + 1}`,
+   563→        size: f.size,
+   564→        mime: f.type || undefined,
+   565→        received: 0,
+   566→        status: "queued",
+   567→        imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
+   568→      }));
+   569→      rawFilesRef.current = [...rawFilesRef.current, ...more];
+   570→      const files = [...s.files, ...extra];
+   571→      return { ...s, files, totalBytes: files.reduce((a, b) => a + b.size, 0) };
+   572→    });
+   573→  }, []);
+   574→
+   575→  const reorderFiles = useCallback((fromId: string, toId: string) => {
+   576→    setState((s) => {
+   577→      if (s.phase !== "waiting" && s.phase !== "connected") return s;
+   578→      const from = s.files.findIndex((f) => f.id === fromId);
+   579→      const to = s.files.findIndex((f) => f.id === toId);
+   580→      if (from === -1 || to === -1 || from === to) return s;
+   581→      const files = [...s.files];
+   582→      const [moved] = files.splice(from, 1);
+   583→      files.splice(to, 0, moved);
+   584→      const rawFrom = rawFilesRef.current[from];
+   585→      const raws = [...rawFilesRef.current];
+   586→      raws.splice(from, 1);
+   587→      raws.splice(to, 0, rawFrom);
+   588→      rawFilesRef.current = raws;
+   589→      return { ...s, files };
+   590→    });
+   591→  }, []);
+   592→
+   593→  const sendPastedText = useCallback(
+   594→    (text: string) => {
+   595→      const value = text.trim();
+   596→      if (!value) return;
+   597→      let name = "snippet.txt";
+   598→      if (/^https?:\/\//i.test(value)) name = "link.txt";
+   599→      const file = new File([value], name, { type: "text/plain" });
+   600→      beginSending([file]);
+   601→    },
+   602→    [beginSending],
+   603→  );
+   604→
+   605→  const reset = useCallback(() => {
+   606→    if (peerLeftTimerRef.current) {
+   607→      clearTimeout(peerLeftTimerRef.current);
+   608→      peerLeftTimerRef.current = null;
+   609→    }
+   610→    transferRef.current?.releaseAll();
+   611→    transferRef.current?.close();
+   612→    transferRef.current = null;
+   613→    signalingRef.current?.disconnect();
+   614→    signalingRef.current = null;
+   615→    if (typeof window !== "undefined") {
+   616→      setState((s) => {
+   617→        s.files.forEach((f) => {
+   618→          if (f.imageUrl) {
+   619→            try { URL.revokeObjectURL(f.imageUrl); } catch { /* ignore */ }
+   620→          }
+   621→        });
+   622→        return s;
+   623→      });
+   624→    }
+   625→    rawFilesRef.current = [];
+   626→    sessionIdRef.current = mode === "receiver" ? sessionIdParam ?? null : null;
+   627→    speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
+   628→    reconnectPrevPhase.current = null;
+   629→    patch({ ...INITIAL, mode, sessionId: mode === "receiver" ? sessionIdParam ?? null : null });
+   630→  }, [mode, patch, sessionIdParam]);
+   631→
+   632→  const cancel = useCallback(() => {
+   633→    if (peerLeftTimerRef.current) {
+   634→      clearTimeout(peerLeftTimerRef.current);
+   635→      peerLeftTimerRef.current = null;
+   636→    }
+   637→    transferRef.current?.cancel();
+   638→    patch({ phase: "error", error: "Transfer cancelled." });
+   639→  }, [patch]);
+   640→
+   641→  const saveFile = useCallback((url: string, name: string) => {
+   642→    const a = document.createElement("a");
+   643→    a.href = url;
+   644→    a.download = name;
+   645→    document.body.appendChild(a);
+   646→    a.click();
+   647→    a.remove();
+   648→  }, []);
+   649→
+   650→  const shareImage = useCallback(
+   651→    async (url: string, name: string, mime: string): Promise<"shared" | "downloaded" | "failed"> => {
+   652→      if (typeof navigator === "undefined" || !navigator.canShare) return "failed";
+   653→      try {
+   654→        const res = await fetch(url);
+   655→        const blob = await res.blob();
+   656→        const file = new File([blob], name, { type: mime || blob.type || "image/png" });
+   657→        if (!navigator.canShare({ files: [file] })) return "failed";
+   658→        await navigator.share({ files: [file], title: name });
+   659→        return "shared";
+   660→      } catch {
+   661→        try {
+   662→          const a = document.createElement("a");
+   663→          a.href = url;
+   664→          a.download = name;
+   665→          document.body.appendChild(a);
+   666→          a.click();
+   667→          a.remove();
+   668→          return "downloaded";
+   669→        } catch {
+   670→          return "failed";
+   671→        }
+   672→      }
+   673→    },
+   674→    [],
+   675→  );
+   676→
+   677→  const shareAll = useCallback(async (): Promise<"shared" | "downloaded" | "failed"> => {
+   678→    const done = state.files.filter((f) => f.url);
+   679→    if (done.length === 0) return "failed";
+   680→    if (typeof navigator === "undefined" || !navigator.canShare) {
+   681→      done.forEach((f) => saveFile(f.url!, f.name));
+   682→      return "downloaded";
+   683→    }
+   684→    try {
+   685→      const files: File[] = [];
+   686→      for (const f of done) {
+   687→        const res = await fetch(f.url!);
+   688→        const blob = await res.blob();
+   689→        files.push(new File([blob], f.name, { type: f.mime || blob.type || "application/octet-stream" }));
+   690→      }
+   691→      if (!navigator.canShare({ files })) {
+   692→        done.forEach((f) => saveFile(f.url!, f.name));
+   693→        return "downloaded";
+   694→      }
+   695→      await navigator.share({ files, title: `${done.length} files from Beam` });
+   696→      return "shared";
+   697→    } catch {
+   698→      return "failed";
+   699→    }
+   700→  }, [state.files, saveFile]);
+   701→
+   702→  const copyAllText = useCallback(async (): Promise<number> => {
+   703→    const texts = state.files.filter((f) => f.text).map((f) => f.text as string);
+   704→    if (texts.length === 0) return 0;
+   705→    const joined = texts.join("\n\n— — —\n\n");
+   706→    try {
+   707→      await navigator.clipboard.writeText(joined);
+   708→    } catch {
+   709→      return 0;
+   710→    }
+   711→    return texts.length;
+   712→  }, [state.files]);
+   713→
+   714→  const copyLink = useCallback(async (): Promise<boolean> => {
+   715→    if (!state.qrUrl) return false;
+   716→    try {
+   717→      await navigator.clipboard.writeText(state.qrUrl);
+   718→      return true;
+   719→    } catch {
+   720→      return false;
+   721→    }
+   722→  }, [state.qrUrl]);
+   723→
+   724→  return useMemo(
+   725→    () => ({
+   726→      state,
+   727→      beginSending,
+   728→      sendToNearby,
+   729→      reset,
+   730→      cancel,
+   731→      saveFile,
+   732→      shareImage,
+   733→      shareAll,
+   734→      copyAllText,
+   735→      copyLink,
+   736→      removeFile,
+   737→      addMoreFiles,
+   738→      reorderFiles,
+   739→      sendPastedText,
+   740→    }),
+   741→    [
+   742→      state, beginSending, sendToNearby, reset, cancel, saveFile, shareImage, shareAll,
+   743→      copyAllText, copyLink, removeFile, addMoreFiles, reorderFiles, sendPastedText,
+   744→    ],
+   745→  );
+   746→}
+   747→
+   748→// ---------------------------------------------------------------------------
+   749→// Helpers
+   750→// ---------------------------------------------------------------------------
+   751→
+   752→function labelToDescriptor(label: string): DeviceDescriptor {
+   753→  const short = detectDevice(` ${label}`).short;
+   754→  return { label, short };
+   755→}
+   756→
+   757→function makeTransfer(
+   758→  role: "sender" | "receiver",
+   759→  sessionId: string,
+   760→  signaling: SignalingClient,
+   761→  patch: (p: Partial<SessionState>) => void,
+   762→  setState: React.Dispatch<React.SetStateAction<SessionState>>,
+   763→  reconnectPrev: React.MutableRefObject<Phase | null>,
+   764→): BeamTransfer {
+   765→  const ice = getIceServers();
+   766→  const t = new BeamTransfer(role, sessionId, signaling, ice);
+   767→
+   768→  t.onChannelOpen = () => {
+   769→    patch({
+   770→      phase: "transferring",
+   771→      error: null,
+   772→      transferStartedAt: Date.now(),
+   773→      transferEndedAt: null,
+   774→      peakSpeed: 0,
+   775→    });
+   776→  };
+   777→  t.onChannelClose = () => {
+   778→    setState((s) => (s.phase === "done" ? s : { ...s, phase: "error", error: "Connection closed." }));
+   779→  };
+   780→  t.onReconnecting = () => {
+   781→    setState((s) => {
+   782→      if (s.phase === "reconnecting") return s;
+   783→      reconnectPrev.current = s.phase;
+   784→      return { ...s, phase: "reconnecting" };
+   785→    });
+   786→  };
+   787→  t.onReconnected = () => {
+   788→    setState((s) => {
+   789→      const restore =
+   790→        reconnectPrev.current && reconnectPrev.current !== "reconnecting"
+   791→          ? reconnectPrev.current
+   792→          : "transferring";
+   793→      reconnectPrev.current = null;
+   794→      return { ...s, phase: restore as Phase };
+   795→    });
+   796→  };
+   797→  t.onFailed = (reason) => patch({ phase: "error", error: reason });
+   798→  t.onQuality = (level) => patch({ quality: level });
+   799→  t.onCandidateType = (ct) => patch({ candidateType: ct });
+   800→
+   801→  t.onFileMeta = (files: IncomingFile[]) => {
+   802→    setState((s) => ({
+   803→      ...s,
+   804→      files: files.map((f) => ({
+   805→        id: f.id, name: f.name, size: f.size, mime: f.mime, received: 0, status: "queued" as const,
+   806→      })),
+   807→      totalBytes: files.reduce((a, b) => a + b.size, 0),
+   808→      receivedBytes: 0,
+   809→      phase: "connected",
+   810→    }));
+   811→  };
+   812→  t.onFileStart = (file: IncomingFile) => {
+   813→    setState((s) => ({
+   814→      ...s,
+   815→      phase: "transferring",
+   816→      files: s.files.map((f) => (f.id === file.id ? { ...f, status: "transferring" as const } : f)),
+   817→    }));
+   818→  };
+   819→  t.onFileProgress = (id, received, size) => {
+   820→    setState((s) => {
+   821→      let receivedBytes = 0;
+   822→      const files = s.files.map((f) => {
+   823→        if (f.id === id) {
+   824→          receivedBytes += received;
+   825→          return { ...f, received, status: "transferring" as const };
+   826→        }
+   827→        receivedBytes += f.received;
+   828→        return f;
+   829→      });
+   830→      return { ...s, files, receivedBytes, totalBytes: s.totalBytes || files.reduce((a, b) => a + b.size, 0) };
+   831→    });
+   832→  };
+   833→  t.onFileComplete = (file: IncomingFile, url: string) => {
+   834→    // CRITICAL FIX for "stuck at 100% with no download button":
+   835→    // Mark the file done + set the URL SYNCHRONOUSLY for ALL file types.
+   836→    // The text/image fetch happens in the background and patches `text` /
+   837→    // `imageUrl` in afterwards — the Download button renders immediately.
+   838→    // (Previously the text branch awaited fetch(url).then(r => r.text())
+   839→    // before marking done, so the user saw 100% with no button for the
+   840→    // fetch duration — which could be 100s of ms or never resolve if the
+   841→    // blob URL fetch was somehow interrupted.)
+   842→    const isText = isTextLike(file.name, file.mime);
+   843→    const isImage = isImageLike(file.name, file.mime);
+   844→    setState((s) => ({
+   845→      ...s,
+   846→      files: s.files.map((f) =>
+   847→        f.id === file.id
+   848→          ? { ...f, status: "done" as const, received: f.size, url }
+   849→          : f,
+   850→      ),
+   851→    }));
+   852→    // Side-load text content (small text-like files) in the background.
+   853→    if (url && isText && file.size > 0 && file.size <= 256 * 1024) {
+   854→      fetch(url)
+   855→        .then((r) => r.text())
+   856→        .then((text) => {
+   857→          setState((s) => ({
+   858→            ...s,
+   859→            files: s.files.map((f) =>
+   860→              f.id === file.id ? { ...f, text } : f,
+   861→            ),
+   862→          }));
+   863→        })
+   864→        .catch(() => { /* URL already set; text is optional */ });
+   865→    }
+   866→    // Side-load image preview URL in the background (only for small images
+   867→    // where reusing the object URL is fine — the FileRow already shows it).
+   868→    if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
+   869→      setState((s) => ({
+   870→        ...s,
+   871→        files: s.files.map((f) =>
+   872→          f.id === file.id ? { ...f, imageUrl: url } : f,
+   873→        ),
+   874→      }));
+   875→    }
+   876→  };
+   877→  t.onAllComplete = () => {
+   878→    setState((s) => ({
+   879→      ...s,
+   880→      phase: "done",
+   881→      speed: 0,
+   882→      transferEndedAt: Date.now(),
+   883→      // SENDER: mark all files as done (they were sent — no URL needed).
+   884→      // RECEIVER: do NOT mark files as done here. The receiver's finalizeFile
+   885→      // (async) is still reassembling blobs + creating URLs. If we mark them
+   886→      // done here, they'd be "done" with no URL → stuck at 100% with no
+   887→      // Download button. finalizeFile's onFileComplete is the ONLY place that
+   888→      // should mark each receiver file done (with a real blob URL).
+   889→      files: role === "sender"
+   890→        ? s.files.map((f) => ({ ...f, status: "done" as const, received: f.size }))
+   891→        : s.files,
+   892→    }));
+   893→    // RECEIVER SAFETY NET: if any files are still "transferring" after 5s
+   894→    // (finalizeFile should have finished by then), force them to "done" and
+   895→    // ALSO recover any URL that finalizeFile created but onFileComplete didn't
+   896→    // get to apply (e.g., the React state batch raced). This prevents a
+   897→    // permanent stuck state if finalizeFile somehow doesn't fire onAllComplete.
+   898→    if (role === "receiver") {
+   899→      setTimeout(() => {
+   900→        setState((s) => ({
+   901→          ...s,
+   902→          files: s.files.map((f) => {
+   903→            if (f.status === "transferring") {
+   904→              // Try to recover the URL from the transfer's incoming map
+   905→              // (it may have been finalized but the onFileComplete callback
+   906→              // raced with the React state update).
+   907→              const recoveredUrl = t.getFinalizedUrl(f.id);
+   908→              return {
+   909→                ...f,
+   910→                status: "done" as const,
+   911→                received: f.size,
+   912→                url: f.url ?? recoveredUrl,
+   913→              };
+   914→            }
+   915→            // Also catch any "done" file that somehow has no URL.
+   916→            if (f.status === "done" && !f.url) {
+   917→              const recoveredUrl = t.getFinalizedUrl(f.id);
+   918→              return recoveredUrl ? { ...f, url: recoveredUrl } : f;
+   919→            }
+   920→            return f;
+   921→          }),
+   922→        }));
+   923→      }, 5000);
+   924→    }
+   925→  };
+   926→  t.onCancel = () => patch({ phase: "error", error: "Transfer cancelled by the other device." });
+   927→
+   928→  return t;
+   929→}
+   930→
+   931→
+   932→// ---- helpers ----
+   933→function isTextLike(name: string, mime?: string): boolean {
+   934→  if (mime) {
+   935→    if (mime.startsWith("text/")) return true;
+   936→    if (mime === "application/json" || mime === "application/xml") return true;
+   937→  }
+   938→  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+   939→  return [
+   940→    "txt", "md", "markdown", "json", "js", "ts", "tsx", "jsx", "css", "scss",
+   941→    "html", "htm", "xml", "yaml", "yml", "csv", "tsv", "sh", "py", "rb", "go",
+   942→    "rs", "java", "c", "cc", "cpp", "h", "hpp", "sql", "toml", "ini", "env",
+   943→    "log", "conf", "gitignore",
+   944→  ].includes(ext);
+   945→}
+   946→
+   947→function isImageLike(name: string, mime?: string): boolean {
+   948→  if (mime && mime.startsWith("image/")) return true;
+   949→  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+   950→  return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"].includes(ext);
+   951→}
+   952→

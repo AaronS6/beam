@@ -75,9 +75,20 @@ export type TransferState =
 
 type IceServers = RTCIceServer[];
 
-/** Build the WebRTC ICE server config: Google STUN + optional TURN from env. */
+/** Build the WebRTC ICE server config.
+ *  Multiple STUN servers let the browser query them IN PARALLEL and pick the
+ *  fastest to respond — a single STUN server (the old config) meant any
+ *  slowness at that one endpoint directly delayed every connection by the
+ *  full STUN round-trip. Google + Cloudflare are both anycast, free, and
+ *  globally fast; Cloudflare in particular is noticeably quicker than Google
+ *  from many mobile networks. Optional TURN from env for restrictive networks
+ *  (symmetric NAT, UDP-blocked corporate wifi) — without it those networks hit
+ *  the 30s ICE timeout and fail instead of relaying. */
 export function getIceServers(): IceServers {
-  const servers: IceServers = [{ urls: "stun:stun.l.google.com:19302" }];
+  const servers: IceServers = [
+    { urls: "stun:stun.l.google.com:19302" },
+    { urls: "stun:stun.cloudflare.com:3478" },
+  ];
   const turnUrl = process.env.NEXT_PUBLIC_TURN_URL;
   const turnUser = process.env.NEXT_PUBLIC_TURN_USER;
   const turnCred = process.env.NEXT_PUBLIC_TURN_CRED;
@@ -88,11 +99,16 @@ export function getIceServers(): IceServers {
 }
 
 // Control messages (sent on the ordered control channel as JSON strings)
+// NOTE on direction: meta/file-start/file-end/done/cancel flow SENDER→RECEIVER.
+// all-received flows RECEIVER→SENDER and is the ack that the receiver has truly
+// finalized every file (blobs built + URLs created) — the sender must not
+// declare "All sent" until it arrives (or the 20s fallback fires).
 type ControlMessage =
   | { type: "meta"; files: IncomingFile[] }
   | { type: "file-start"; seq: number; id: string; name: string; size: number; mime?: string }
   | { type: "file-end"; seq: number }
   | { type: "done" }
+  | { type: "all-received" }
   | { type: "cancel" };
 
 export class BeamTransfer {
@@ -112,11 +128,17 @@ export class BeamTransfer {
 
   // ---- Receiver-side state ----
   // Keyed by fileSeq (a number, assigned per-file in order).
+  // `count` tracks the HIGHEST chunk index seen (+1) — used only as the
+  // upper bound for the reassembly loop. It is NOT a count of received
+  // chunks: with unordered delivery the highest-index chunk can land before
+  // earlier ones. Completion is detected with `received >= size` and
+  // `receivedChunks >= expectedCount` (the true signals).
   private incoming: Map<
     number,
     {
       chunks: Map<number, ArrayBuffer>;
       received: number;
+      receivedChunks: number;
       count: number;
       expectedCount: number;
       file: IncomingFile;
@@ -136,6 +158,11 @@ export class BeamTransfer {
   onFileProgress?: (id: string, received: number, size: number) => void;
   onFileComplete?: (file: IncomingFile, url: string) => void;
   onAllComplete?: () => void;
+  /** Sender-side: fired when the sender has sent every chunk + the "done"
+   *  control message and is now WAITING for the receiver's "all-received"
+   *  ack. Use this to flip the UI to a "finishing up on the other device —
+   *  keep this app open" state. (The sender must NOT show "All sent" yet.) */
+  onSenderFinishing?: () => void;
   onCancel?: () => void;
   onQuality?: (level: number) => void;
   onCandidateType?: (type: "host" | "srflx" | "prflx" | "relay" | "unknown") => void;
@@ -148,6 +175,13 @@ export class BeamTransfer {
   private iceConnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectingFailTimer: ReturnType<typeof setTimeout> | null = null;
   private channelOpenTimer: ReturnType<typeof setTimeout> | null = null;
+  // Sender-side: wait for the receiver's "all-received" ack before declaring
+  // the transfer done. Prevents the sender showing "All sent" while the
+  // receiver is still draining late chunks + reassembling blobs.
+  private ackResolver: ((ok: boolean) => void) | null = null;
+  private ackTimer: ReturnType<typeof setTimeout> | null = null;
+  private ackOnClose: ((e: Event) => void) | null = null;
+  private ackCtrl: RTCDataChannel | null = null;
 
   constructor(
     role: "sender" | "receiver",
@@ -166,7 +200,21 @@ export class BeamTransfer {
   // --------------------------------------------------------------------------------------
   private ensurePC() {
     if (this.pc) return this.pc;
-    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    const pc = new RTCPeerConnection({
+      iceServers: this.iceServers,
+      // Pre-warm the ICE agent — allocates a pool of candidate-gathering
+      // slots up front so the FIRST connection doesn't wait to spin them up.
+      // This shaves a few hundred ms off the "Connecting…" phase on the first
+      // peer connection with zero downside on throughput or reliability.
+      iceCandidatePoolSize: 10,
+      // Bundle ALL data channels over a SINGLE ICE transport instead of one
+      // per channel. That means the browser only has to gather candidates +
+      // run connectivity checks for ONE transport (not four), which is the
+      // single biggest WebRTC-negotiation speedup available for a data-only
+      // connection. The 4 channels (ctrl + 3 data) still get full bandwidth —
+      // SCTP multiplexes many streams within one transport.
+      bundlePolicy: "max-bundle",
+    });
 
     // ICE candidate trickle
     pc.onicecandidate = (e) => {
@@ -366,7 +414,7 @@ export class BeamTransfer {
   // --------------------------------------------------------------------------------------
   // RECEIVER: control channel message handler.
   // --------------------------------------------------------------------------------------
-  private handleControlMessage(raw: string) {
+  private async handleControlMessage(raw: string) {
     let msg: ControlMessage;
     try {
       msg = JSON.parse(raw) as ControlMessage;
@@ -384,7 +432,14 @@ export class BeamTransfer {
         // file-end (control) can arrive BEFORE all binary chunks (data) are
         // processed, so we must wait for the full expected count on file-end.
         const expectedCount = Math.max(1, Math.ceil(msg.size / CHUNK_SIZE));
-        this.incoming.set(msg.seq, { chunks: new Map(), received: 0, count: 0, expectedCount, file });
+        this.incoming.set(msg.seq, {
+          chunks: new Map(),
+          received: 0,
+          receivedChunks: 0,
+          count: 0,
+          expectedCount,
+          file,
+        });
         this.onFileStart?.(file);
         break;
       }
@@ -396,22 +451,46 @@ export class BeamTransfer {
         break;
       }
       case "done": {
-        // CRITICAL FIX for "stuck at 100% with no download button":
-        // Before announcing completion, sweep through every file we've heard
-        // about (via file-start) and ensure it gets finalized. This catches:
-        //   • empty files (no chunks ever sent → no auto-finalize trigger)
-        //   • files where the file-end control message was lost mid-transfer
-        //   • files where finalizeFile's polling timed out before chunks arrived
-        // Each finalizeFile call ALWAYS fires onFileComplete (even with zero
-        // chunks → empty blob → real URL). So the receiver's UI gets a real
-        // download URL for every file, never a phantom "done with no URL".
+        // CRITICAL FIX for "stuck at 100% with no download button" AND for
+        // "sender says done while receiver is still receiving":
+        //
+        // 1. Sweep every file we've heard about (via file-start) and finalize
+        //    any that aren't yet. This catches empty files, lost file-end
+        //    messages, and files whose auto-finalize hasn't triggered.
+        // 2. AWAIT every finalizeFile promise so the blobs + object URLs are
+        //    REAL before we announce completion. Previously onAllComplete fired
+        //    while finalizeFile was still polling → the receiver's phase flipped
+        //    to "done" but each file was still "transferring" at 100% with no
+        //    Download button (the exact "stuck at 100%" symptom).
+        // 3. Send "all-received" back to the SENDER on the control channel so
+        //    the sender knows the receiver truly has every file. The sender
+        //    won't flip to "All sent" until this ack arrives (or a 20s
+        //    fallback). This stops the user from closing the sender phone the
+        //    instant it says "done" while the receiver is mid-transfer.
+        const finalizePromises: Promise<void>[] = [];
         for (const seq of Array.from(this.incoming.keys())) {
           const entry = this.incoming.get(seq);
           if (entry && !entry.finalized) {
-            void this.finalizeFile(seq);
+            finalizePromises.push(this.finalizeFile(seq));
           }
         }
+        await Promise.all(finalizePromises);
+        // Tell the sender the receiver has everything (best-effort — the
+        // sender has a 20s fallback if this is lost).
+        try {
+          if (this.ctrlCh && this.ctrlCh.readyState === "open") {
+            this.ctrlCh.send(JSON.stringify({ type: "all-received" } satisfies ControlMessage));
+          }
+        } catch { /* ignore — sender's fallback timeout will proceed */ }
         this.onAllComplete?.();
+        break;
+      }
+      case "all-received": {
+        // RECEIVER → SENDER ack: the receiver has finalized every file.
+        // The sender was awaiting this in awaitReceiverAck() after sending
+        // "done"; resolve that wait (with ok=true) so the sender can finally
+        // fire onAllComplete and show "All sent".
+        this.resolveAck(true);
         break;
       }
       case "cancel":
@@ -437,6 +516,11 @@ export class BeamTransfer {
     if (!entry) return;
     entry.chunks.set(chunkIndex, data);
     entry.received += data.byteLength;
+    entry.receivedChunks += 1;
+    // `count` = highest chunk index seen + 1. Used ONLY as the upper bound for
+    // the reassembly loop below. It is NOT a completion signal — with unordered
+    // delivery the highest-index chunk can land before earlier ones, so `count`
+    // can equal `expectedCount` while `received` is still well below `size`.
     entry.count = Math.max(entry.count, chunkIndex + 1);
     this.onFileProgress?.(entry.file.id, entry.received, entry.file.size);
 
@@ -532,9 +616,74 @@ export class BeamTransfer {
       }
 
       ctrl.send(JSON.stringify({ type: "done" } satisfies ControlMessage));
-      this.onAllComplete?.();
+      // CRITICAL FIX for "sender says done, receiver still receiving":
+      // Do NOT fire onAllComplete here. The "done" control message may sit in
+      // the SCTP buffer behind the last data chunks, and the receiver still
+      // has to drain those chunks + run finalizeFile (which reassembles the
+      // blob + creates the object URL). Firing onAllComplete now makes the
+      // sender's UI show "All sent" while the receiver is mid-transfer — and
+      // if the user closes the sender tab on that signal, the WebRTC
+      // connection tears down, the receiver loses late chunks, and the
+      // receiver gets stuck at 100% with no Download button.
+      //
+      // Instead: flip the UI to a "finishing up on the other device" state,
+      // then wait for the receiver's "all-received" ack (sent after all its
+      // finalizeFile calls complete). Fall back to a 20s ceiling so the sender
+      // never hangs forever if the ack is lost or the peer left.
+      this.onSenderFinishing?.();
+      const ok = await this.awaitReceiverAck();
+      // ok === true  → real ack (or 20s timeout, best-effort proceed)
+      // ok === false → control channel closed mid-wait (peer gone); don't
+      //                fire onAllComplete — onChannelClose / onFailed drive
+      //                the error UI instead so the sender doesn't lie "done".
+      if (ok) this.onAllComplete?.();
     } finally {
       this.sending = false;
+    }
+  }
+
+  /**
+   * Sender: wait for the receiver's "all-received" ack. Resolves with:
+   *  • true  — the receiver sent "all-received" (it has every file), OR the
+   *            20s fallback fired (receiver alive but slow — proceed so the
+   *            sender's UI doesn't hang forever).
+   *  • false — the control channel closed mid-wait (peer gone). The caller
+   *            should NOT fire onAllComplete; onChannelClose / onFailed will
+   *            surface the error.
+   */
+  private awaitReceiverAck(): Promise<boolean> {
+    return new Promise<boolean>((resolve) => {
+      this.ackResolver = resolve;
+      const ctrl = this.ctrlCh;
+      const onClose = () => this.resolveAck(false);
+      if (ctrl) {
+        ctrl.addEventListener("close", onClose, { once: true });
+        this.ackOnClose = onClose;
+        this.ackCtrl = ctrl;
+      }
+      this.ackTimer = setTimeout(() => {
+        console.warn("[beam-webrtc] No all-received ack within 20s — proceeding. The receiver may still be finishing.");
+        this.resolveAck(true);
+      }, 20000);
+    });
+  }
+
+  /** Resolve the pending ack wait (if any). `ok` follows awaitReceiverAck's
+   *  contract: true = proceed with onAllComplete, false = peer gone (don't). */
+  private resolveAck(ok: boolean) {
+    if (this.ackResolver) {
+      const r = this.ackResolver;
+      this.ackResolver = null;
+      r(ok);
+    }
+    if (this.ackTimer) {
+      clearTimeout(this.ackTimer);
+      this.ackTimer = null;
+    }
+    if (this.ackOnClose && this.ackCtrl) {
+      this.ackCtrl.removeEventListener("close", this.ackOnClose);
+      this.ackOnClose = null;
+      this.ackCtrl = null;
     }
   }
 
@@ -556,17 +705,34 @@ export class BeamTransfer {
     if (!entry || entry.finalized) return;
     entry.finalized = true; // ← claim now, before any await
 
-    // Skip polling entirely if we've already received all expected bytes (the
-    // happy path), OR if the file is empty (no chunks will ever arrive). Both
-    // are common cases — polling them just delays the URL by 3s.
-    const needsPoll = entry.received < entry.file.size && entry.count < entry.expectedCount;
-    if (needsPoll) {
-      const deadline = Date.now() + 3000;
-      while (entry.count < entry.expectedCount && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 20));
-      }
+    // Wait until we ACTUALLY have all the bytes before reassembling. The true
+    // completion signals are: `received >= file.size` (bytes) OR
+    // `receivedChunks >= expectedCount` (chunk count). We deliberately do NOT
+    // use `count` (highest index) here — with unordered reliable delivery the
+    // highest-index chunk can arrive BEFORE earlier ones, so `count` can equal
+    // `expectedCount` while `received` is still far below `size`. Exiting the
+    // poll on `count` would reassemble a PARTIAL blob and then, because
+    // `finalized` is already true, suppress the auto-finalize when the missing
+    // chunks finally arrive — leaving the user with a corrupt file or a
+    // "stuck at 100%" UI.
+    //
+    // 10s ceiling: file-end can arrive on the ordered control channel while
+    // late data chunks are still draining from the SCTP buffers. 10s is plenty
+    // on any connection healthy enough to have gotten this far; if chunks
+    // still haven't arrived after 10s the connection is effectively dead and
+    // we finalize with what we have (better than hanging the UI forever).
+    const deadline = Date.now() + 10000;
+    while (
+      entry.received < entry.file.size &&
+      entry.receivedChunks < entry.expectedCount &&
+      Date.now() < deadline
+    ) {
+      await new Promise((r) => setTimeout(r, 20));
     }
-    // Reassemble in index order.
+    // Reassemble in index order. Iterate up to the highest index we've seen
+    // so we include every chunk that arrived; `if (c)` skips any still-missing
+    // slots (shouldn't happen on a healthy connection after the poll above,
+    // but is a safe degradation if the 10s ceiling fired).
     const ordered: ArrayBuffer[] = [];
     for (let i = 0; i < entry.count; i++) {
       const c = entry.chunks.get(i);
@@ -722,6 +888,9 @@ export class BeamTransfer {
       clearTimeout(this.channelOpenTimer);
       this.channelOpenTimer = null;
     }
+    // Settle any pending receiver-ack wait as not-ok (peer gone) so an
+    // awaiting sendQueuedFiles doesn't fire onAllComplete on teardown.
+    this.resolveAck(false);
     if (this.pc) {
       this.pc.onicecandidate = null;
       this.pc.oniceconnectionstatechange = null;

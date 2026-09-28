@@ -208,10 +208,10 @@ export function ReceiverPanel({
           <Download className="mt-0.5 h-5 w-5 shrink-0 text-primary" strokeWidth={2} />
           <div>
             <p className="font-display text-[15px] font-bold text-foreground">
-              Press Save to download
+              All files arrived — press Download to save
             </p>
             <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
-              Your files arrived safely — tap the Save button on each one to save it to this device. They're not downloaded automatically.
+              Your files landed safely and the sender has been told you're all set. Tap Download on each one to save it to this device. They're not downloaded automatically.
             </p>
           </div>
         </div>
@@ -222,6 +222,24 @@ export function ReceiverPanel({
         <div className="mb-4 flex items-center gap-3 rounded-2xl border border-border bg-secondary/60 px-4 py-3">
           <WifiOff className="h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.75} />
           <p className="text-sm text-muted-foreground">Connection dipped. Reconnecting — hang on.</p>
+        </div>
+      )}
+
+      {/* Keep-phones-on banner — the #1 cause of "stuck at 100%" is the
+          user (or the sender) closing/locking their phone mid-transfer,
+          which tears down the WebRTC connection before late chunks land.
+          This banner makes the contract explicit on the receiving side too. */}
+      {phase === "transferring" && (
+        <div className="mb-4 flex items-start gap-3 rounded-2xl border border-border bg-secondary/60 px-4 py-3">
+          <Smartphone className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.75} />
+          <div>
+            <p className="font-display text-[14px] font-bold text-foreground">
+              Keep both phones on
+            </p>
+            <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
+              Keep this app open and both phones unlocked until every file shows “Ready to save”. Closing either device — or the sender leaving early — can interrupt the transfer and leave files stuck at 100%.
+            </p>
+          </div>
         </div>
       )}
 
