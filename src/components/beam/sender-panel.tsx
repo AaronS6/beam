@@ -83,7 +83,7 @@ export function SenderPanel({
     setDragId(null); setOverId(null);
   };
 
-  const canEditQueue = phase === "waiting" || phase === "connected";
+  const canEditQueue = phase === "waiting" || phase === "connected" || phase === "connecting";
   const pathExpiry = createdAt ? createdAt + 5 * 60 * 1000 : null;
 
   return (
@@ -121,6 +121,23 @@ export function SenderPanel({
               </p>
               <p className="mt-1.5 max-w-[28ch] text-center text-sm leading-relaxed text-muted-foreground">
                 They'll connect straight to your device
+              </p>
+            </div>
+          </BeamStage>
+        )}
+
+        {phase === "connecting" && (
+          <BeamStage active>
+            <div key="connecting" className="animate-beam-pop flex flex-col items-center px-6 py-14">
+              <div className="relative flex h-[120px] w-[120px] items-center justify-center">
+                <Loader2 className="h-9 w-9 animate-spin text-muted-foreground" strokeWidth={1.5} />
+                <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
+              </div>
+              <p className="font-display mt-6 text-[18px] font-bold text-foreground">
+                Connecting…
+              </p>
+              <p className="mt-1.5 max-w-[28ch] text-center text-sm text-muted-foreground">
+                Linking up with {peerDevice?.label ?? "the receiver"}. This usually takes a few seconds.
               </p>
             </div>
           </BeamStage>
@@ -233,6 +250,18 @@ export function SenderPanel({
           </div>
         )}
 
+        {phase === "connecting" && (
+          <div className="flex flex-col items-center gap-2 text-center">
+            <div className="flex items-center gap-2 text-[15px] font-medium text-foreground">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" strokeWidth={2} />
+              Establishing peer-to-peer connection
+            </div>
+            <p className="text-xs text-muted-foreground">
+              If this takes more than 30s, the network may be blocking WebRTC.
+            </p>
+          </div>
+        )}
+
         {phase === "transferring" && (
           <div className="mb-4 flex items-center justify-between text-sm font-medium text-foreground">
             <span>{formatBytes(receivedBytes)} of {formatBytes(totalBytes)}</span>
@@ -286,7 +315,7 @@ export function SenderPanel({
 
         {/* Actions */}
         <div className="mt-6 flex items-center justify-center gap-3">
-          {(phase === "waiting" || phase === "connected") && (
+          {(phase === "waiting" || phase === "connected" || phase === "connecting") && (
             <button
               type="button"
               onClick={onReset}

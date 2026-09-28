@@ -38,6 +38,11 @@ export type Phase = TransferState | "expired";
 
 /** 5-minute ceiling for both paths (Path A session idle, Path B storage). */
 const SESSION_TTL_MS = 5 * 60 * 1000;
+/** Debounce for "peer-left" events. socket.io auto-reconnects on transient
+ *  network blips — killing the session immediately on the first disconnect
+ *  is the #1 cause of "stuck at connecting" when the user's wifi flutters.
+ *  We wait this long to see if the peer rejoins before showing an error. */
+const PEER_LEFT_GRACE_MS = 3000;
 
 export type SessionState = {
   mode: "sender" | "receiver";
@@ -105,9 +110,38 @@ export function useBeamSession(sessionIdParam?: string | null) {
   // files, we store the target here, open the file picker, and auto-send to
   // them once files are chosen (in beginSending).
   const pendingNearbyRef = useRef<{ socketId: string; deviceLabel?: string } | null>(null);
+  // peer-left debounce timer — socket.io auto-reconnects, so a brief signaling
+  // disconnect shouldn't immediately kill the session. We wait PEER_LEFT_GRACE_MS
+  // to see if the peer comes back; if they do (server re-emits peer-joined),
+  // we cancel the timer and the user keeps their transfer.
+  const peerLeftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const patch = useCallback((p: Partial<SessionState>) => {
     setState((s) => ({ ...s, ...p }));
+  }, []);
+
+  /** Schedule a peer-left error after PEER_LEFT_GRACE_MS. If a peer-joined /
+   *  session-joined / re-join event arrives before the timer fires, cancel it
+   *  so the user keeps their transfer across brief signaling socket blips. */
+  const schedulePeerLeftError = useCallback((errorMsg: string) => {
+    if (peerLeftTimerRef.current) clearTimeout(peerLeftTimerRef.current);
+    peerLeftTimerRef.current = setTimeout(() => {
+      peerLeftTimerRef.current = null;
+      setState((s) =>
+        s.phase === "done" || s.phase === "error"
+          ? s
+          : { ...s, phase: "error", error: errorMsg },
+      );
+    }, PEER_LEFT_GRACE_MS);
+  }, []);
+
+  /** Cancel a pending peer-left error — called whenever we get evidence the
+   *  peer is back (peer-joined, session-joined, any signal received). */
+  const cancelPeerLeftError = useCallback(() => {
+    if (peerLeftTimerRef.current) {
+      clearTimeout(peerLeftTimerRef.current);
+      peerLeftTimerRef.current = null;
+    }
   }, []);
 
   useEffect(() => {
@@ -204,9 +238,11 @@ export function useBeamSession(sessionIdParam?: string | null) {
       signalingRef.current = sessionSignaling;
       sessionSignaling.onConnect = () => sessionSignaling.joinSession(sid, deviceInfo());
       sessionSignaling.onSessionJoined = ({ sender }) => {
+        cancelPeerLeftError();
         patch({ phase: "waiting", peerDevice: sender?.name ? { label: sender.name, short: sender.platform ?? "" } : null });
       };
       sessionSignaling.onSignal = (sigdata) => {
+        cancelPeerLeftError();
         let transfer = transferRef.current;
         if (!transfer) {
           transfer = makeTransfer("receiver", sid, sessionSignaling, patch, setState, reconnectPrevPhase);
@@ -215,9 +251,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         void transfer.handleSignal(sigdata);
       };
       sessionSignaling.onPeerLeft = () => {
-        setState((s) =>
-          s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
-        );
+        schedulePeerLeftError("The other device disconnected.");
       };
       sessionSignaling.onSessionExpired = () => patch({ phase: "expired" });
       sessionSignaling.onError = (msg) => patch({ error: msg });
@@ -227,7 +261,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       lobby.disconnect();
       lobbyRef.current = null;
     };
-  }, [patch]);
+  }, [patch, cancelPeerLeftError, schedulePeerLeftError]);
 
   // ---- Speed sampler (tracks peak too) ----
   useEffect(() => {
@@ -278,6 +312,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
     signalingRef.current = signaling;
     signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
     signaling.onSessionJoined = ({ sender }) => {
+      cancelPeerLeftError();
       patch({
         phase: "waiting",
         peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
@@ -289,11 +324,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
     };
     signaling.onSessionExpired = () => patch({ phase: "expired" });
     signaling.onPeerLeft = () => {
-      setState((s) =>
-        s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
-      );
+      // Don't immediately error — wait PEER_LEFT_GRACE_MS for the peer to
+      // come back. Brief signaling disconnects are common on mobile.
+      schedulePeerLeftError("The other device disconnected.");
     };
     signaling.onSignal = (sigdata) => {
+      cancelPeerLeftError();
       let transfer = transferRef.current;
       if (!transfer) {
         transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
@@ -310,7 +346,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       transferRef.current = null;
       signalingRef.current = null;
     };
-  }, [mode, sessionIdParam]);
+  }, [mode, sessionIdParam, cancelPeerLeftError, schedulePeerLeftError]);
 
   // ---- Sender actions ----
   const sendToNearbyRef = useRef<((socketId: string, deviceLabel?: string) => void) | null>(null);
@@ -369,25 +405,37 @@ export function useBeamSession(sessionIdParam?: string | null) {
       signaling.onSessionCreated = ({ createdAt }) => patch({ createdAt });
       signaling.onPeerJoined = ({ receiver }) => {
         const sid = sessionIdRef.current ?? sessionId;
-        patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
+        // Peer came back (or joined fresh) — cancel any pending peer-left
+        // error that was queued during a brief signaling disconnect.
+        cancelPeerLeftError();
+        patch({
+          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+          // Transition to "connecting" so the sender UI shows "Connecting…"
+          // instead of the QR code while ICE is negotiating. Previously the
+          // sender stayed in "waiting" (showing the QR) for the entire 5-30s
+          // ICE negotiation, which looked like the connection wasn't taking.
+          phase: "connecting",
+        });
         const transfer = makeTransfer("sender", sid, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
         transferRef.current = transfer;
         void transfer.createOffer();
       };
-      signaling.onSignal = (data) => transferRef.current?.handleSignal(data);
+      signaling.onSignal = (data) => {
+        // Any signal from the peer means they're alive — cancel pending errors.
+        cancelPeerLeftError();
+        transferRef.current?.handleSignal(data);
+      };
       signaling.onPeerLeft = () => {
-        setState((s) =>
-          s.phase === "done"
-            ? s
-            : { ...s, phase: "error", error: "The receiver disconnected before the transfer finished." },
-        );
+        // Don't immediately go to error — socket.io auto-reconnects on brief
+        // network blips. Wait PEER_LEFT_GRACE_MS for the peer to come back.
+        schedulePeerLeftError("The receiver disconnected before the transfer finished.");
       };
       signaling.onSessionExpired = () => patch({ phase: "expired" });
       signaling.onError = (msg) => patch({ error: msg });
       void getIceServers;
     },
-    [patch],
+    [patch, cancelPeerLeftError, schedulePeerLeftError],
   );
 
   /** Sender: pick a nearby device (by socketId) to send the selected files to.
@@ -456,25 +504,29 @@ export function useBeamSession(sessionIdParam?: string | null) {
         lobby.invite(socketId, sessionId, deviceInfo(), items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })));
       };
       signaling.onPeerJoined = ({ receiver }) => {
-        patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
+        cancelPeerLeftError();
+        patch({
+          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+          // Transition to "connecting" — see QR-path comment above.
+          phase: "connecting",
+        });
         const transfer = makeTransfer("sender", sessionId, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
         transferRef.current = transfer;
         void transfer.createOffer();
       };
-      signaling.onSignal = (data) => transferRef.current?.handleSignal(data);
+      signaling.onSignal = (data) => {
+        cancelPeerLeftError();
+        transferRef.current?.handleSignal(data);
+      };
       signaling.onPeerLeft = () => {
-        setState((s) =>
-          s.phase === "done"
-            ? s
-            : { ...s, phase: "error", error: "The other device disconnected before the transfer finished." },
-        );
+        schedulePeerLeftError("The other device disconnected before the transfer finished.");
       };
       signaling.onSessionExpired = () => patch({ phase: "expired" });
       signaling.onError = (msg) => patch({ error: msg });
       void getIceServers;
     },
-    [patch],
+    [patch, cancelPeerLeftError, schedulePeerLeftError],
   );
   // Keep the ref current so beginSending can call it without a forward-ref issue.
   // Must run in an effect (not during render) per React's ref rules.
@@ -551,6 +603,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
   );
 
   const reset = useCallback(() => {
+    if (peerLeftTimerRef.current) {
+      clearTimeout(peerLeftTimerRef.current);
+      peerLeftTimerRef.current = null;
+    }
     transferRef.current?.releaseAll();
     transferRef.current?.close();
     transferRef.current = null;
@@ -574,6 +630,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
   }, [mode, patch, sessionIdParam]);
 
   const cancel = useCallback(() => {
+    if (peerLeftTimerRef.current) {
+      clearTimeout(peerLeftTimerRef.current);
+      peerLeftTimerRef.current = null;
+    }
     transferRef.current?.cancel();
     patch({ phase: "error", error: "Transfer cancelled." });
   }, [patch]);
@@ -771,38 +831,45 @@ function makeTransfer(
     });
   };
   t.onFileComplete = (file: IncomingFile, url: string) => {
+    // CRITICAL FIX for "stuck at 100% with no download button":
+    // Mark the file done + set the URL SYNCHRONOUSLY for ALL file types.
+    // The text/image fetch happens in the background and patches `text` /
+    // `imageUrl` in afterwards — the Download button renders immediately.
+    // (Previously the text branch awaited fetch(url).then(r => r.text())
+    // before marking done, so the user saw 100% with no button for the
+    // fetch duration — which could be 100s of ms or never resolve if the
+    // blob URL fetch was somehow interrupted.)
     const isText = isTextLike(file.name, file.mime);
     const isImage = isImageLike(file.name, file.mime);
+    setState((s) => ({
+      ...s,
+      files: s.files.map((f) =>
+        f.id === file.id
+          ? { ...f, status: "done" as const, received: f.size, url }
+          : f,
+      ),
+    }));
+    // Side-load text content (small text-like files) in the background.
     if (url && isText && file.size > 0 && file.size <= 256 * 1024) {
-      fetch(url).then((r) => r.text()).then((text) => {
-        setState((s) => ({
-          ...s,
-          files: s.files.map((f) =>
-            f.id === file.id ? { ...f, status: "done" as const, received: f.size, url, text } : f,
-          ),
-        }));
-      }).catch(() => {
-        setState((s) => ({
-          ...s,
-          files: s.files.map((f) =>
-            f.id === file.id ? { ...f, status: "done" as const, received: f.size, url } : f,
-          ),
-        }));
-      });
-    } else if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
+      fetch(url)
+        .then((r) => r.text())
+        .then((text) => {
+          setState((s) => ({
+            ...s,
+            files: s.files.map((f) =>
+              f.id === file.id ? { ...f, text } : f,
+            ),
+          }));
+        })
+        .catch(() => { /* URL already set; text is optional */ });
+    }
+    // Side-load image preview URL in the background (only for small images
+    // where reusing the object URL is fine — the FileRow already shows it).
+    if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
       setState((s) => ({
         ...s,
         files: s.files.map((f) =>
-          f.id === file.id
-            ? { ...f, status: "done" as const, received: f.size, url: url || f.url, imageUrl: url }
-            : f,
-        ),
-      }));
-    } else {
-      setState((s) => ({
-        ...s,
-        files: s.files.map((f) =>
-          f.id === file.id ? { ...f, status: "done" as const, received: f.size, url: url || f.url } : f,
+          f.id === file.id ? { ...f, imageUrl: url } : f,
         ),
       }));
     }
@@ -824,16 +891,34 @@ function makeTransfer(
         : s.files,
     }));
     // RECEIVER SAFETY NET: if any files are still "transferring" after 5s
-    // (finalizeFile should have finished by then), force them to "done" with
-    // whatever URL they have (or none). This prevents a permanent stuck state
-    // if finalizeFile somehow doesn't fire onAllComplete.
+    // (finalizeFile should have finished by then), force them to "done" and
+    // ALSO recover any URL that finalizeFile created but onFileComplete didn't
+    // get to apply (e.g., the React state batch raced). This prevents a
+    // permanent stuck state if finalizeFile somehow doesn't fire onAllComplete.
     if (role === "receiver") {
       setTimeout(() => {
         setState((s) => ({
           ...s,
-          files: s.files.map((f) =>
-            f.status === "transferring" ? { ...f, status: "done" as const, received: f.size } : f,
-          ),
+          files: s.files.map((f) => {
+            if (f.status === "transferring") {
+              // Try to recover the URL from the transfer's incoming map
+              // (it may have been finalized but the onFileComplete callback
+              // raced with the React state update).
+              const recoveredUrl = t.getFinalizedUrl(f.id);
+              return {
+                ...f,
+                status: "done" as const,
+                received: f.size,
+                url: f.url ?? recoveredUrl,
+              };
+            }
+            // Also catch any "done" file that somehow has no URL.
+            if (f.status === "done" && !f.url) {
+              const recoveredUrl = t.getFinalizedUrl(f.id);
+              return recoveredUrl ? { ...f, url: recoveredUrl } : f;
+            }
+            return f;
+          }),
         }));
       }, 5000);
     }

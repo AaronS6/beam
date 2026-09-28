@@ -1,0 +1,648 @@
+diff --git a/src/components/beam/sender-panel.tsx b/src/components/beam/sender-panel.tsx
+index ae7f0f3..e6e2bf8 100644
+--- a/src/components/beam/sender-panel.tsx
++++ b/src/components/beam/sender-panel.tsx
+@@ -83,7 +83,7 @@ export function SenderPanel({
+     setDragId(null); setOverId(null);
+   };
+ 
+-  const canEditQueue = phase === "waiting" || phase === "connected";
++  const canEditQueue = phase === "waiting" || phase === "connected" || phase === "connecting";
+   const pathExpiry = createdAt ? createdAt + 5 * 60 * 1000 : null;
+ 
+   return (
+@@ -126,6 +126,23 @@ export function SenderPanel({
+           </BeamStage>
+         )}
+ 
++        {phase === "connecting" && (
++          <BeamStage active>
++            <div key="connecting" className="animate-beam-pop flex flex-col items-center px-6 py-14">
++              <div className="relative flex h-[120px] w-[120px] items-center justify-center">
++                <Loader2 className="h-9 w-9 animate-spin text-muted-foreground" strokeWidth={1.5} />
++                <div className="absolute inset-0 animate-beam-pulse rounded-full" style={{ border: "1px solid color-mix(in srgb, var(--brand) 50%, transparent)" }} />
++              </div>
++              <p className="font-display mt-6 text-[18px] font-bold text-foreground">
++                Connecting…
++              </p>
++              <p className="mt-1.5 max-w-[28ch] text-center text-sm text-muted-foreground">
++                Linking up with {peerDevice?.label ?? "the receiver"}. This usually takes a few seconds.
++              </p>
++            </div>
++          </BeamStage>
++        )}
++
+         {phase === "transferring" && (
+           <BeamStage>
+             <div key="transferring" className="animate-beam-pop flex flex-col items-center px-6 py-8">
+@@ -233,6 +250,18 @@ export function SenderPanel({
+           </div>
+         )}
+ 
++        {phase === "connecting" && (
++          <div className="flex flex-col items-center gap-2 text-center">
++            <div className="flex items-center gap-2 text-[15px] font-medium text-foreground">
++              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" strokeWidth={2} />
++              Establishing peer-to-peer connection
++            </div>
++            <p className="text-xs text-muted-foreground">
++              If this takes more than 30s, the network may be blocking WebRTC.
++            </p>
++          </div>
++        )}
++
+         {phase === "transferring" && (
+           <div className="mb-4 flex items-center justify-between text-sm font-medium text-foreground">
+             <span>{formatBytes(receivedBytes)} of {formatBytes(totalBytes)}</span>
+@@ -286,7 +315,7 @@ export function SenderPanel({
+ 
+         {/* Actions */}
+         <div className="mt-6 flex items-center justify-center gap-3">
+-          {(phase === "waiting" || phase === "connected") && (
++          {(phase === "waiting" || phase === "connected" || phase === "connecting") && (
+             <button
+               type="button"
+               onClick={onReset}
+diff --git a/src/hooks/use-beam-session.ts b/src/hooks/use-beam-session.ts
+index b11c720..8be8fd2 100644
+--- a/src/hooks/use-beam-session.ts
++++ b/src/hooks/use-beam-session.ts
+@@ -38,6 +38,11 @@ export type Phase = TransferState | "expired";
+ 
+ /** 5-minute ceiling for both paths (Path A session idle, Path B storage). */
+ const SESSION_TTL_MS = 5 * 60 * 1000;
++/** Debounce for "peer-left" events. socket.io auto-reconnects on transient
++ *  network blips — killing the session immediately on the first disconnect
++ *  is the #1 cause of "stuck at connecting" when the user's wifi flutters.
++ *  We wait this long to see if the peer rejoins before showing an error. */
++const PEER_LEFT_GRACE_MS = 3000;
+ 
+ export type SessionState = {
+   mode: "sender" | "receiver";
+@@ -105,11 +110,40 @@ export function useBeamSession(sessionIdParam?: string | null) {
+   // files, we store the target here, open the file picker, and auto-send to
+   // them once files are chosen (in beginSending).
+   const pendingNearbyRef = useRef<{ socketId: string; deviceLabel?: string } | null>(null);
++  // peer-left debounce timer — socket.io auto-reconnects, so a brief signaling
++  // disconnect shouldn't immediately kill the session. We wait PEER_LEFT_GRACE_MS
++  // to see if the peer comes back; if they do (server re-emits peer-joined),
++  // we cancel the timer and the user keeps their transfer.
++  const peerLeftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
+   const patch = useCallback((p: Partial<SessionState>) => {
+     setState((s) => ({ ...s, ...p }));
+   }, []);
+ 
++  /** Schedule a peer-left error after PEER_LEFT_GRACE_MS. If a peer-joined /
++   *  session-joined / re-join event arrives before the timer fires, cancel it
++   *  so the user keeps their transfer across brief signaling socket blips. */
++  const schedulePeerLeftError = useCallback((errorMsg: string) => {
++    if (peerLeftTimerRef.current) clearTimeout(peerLeftTimerRef.current);
++    peerLeftTimerRef.current = setTimeout(() => {
++      peerLeftTimerRef.current = null;
++      setState((s) =>
++        s.phase === "done" || s.phase === "error"
++          ? s
++          : { ...s, phase: "error", error: errorMsg },
++      );
++    }, PEER_LEFT_GRACE_MS);
++  }, []);
++
++  /** Cancel a pending peer-left error — called whenever we get evidence the
++   *  peer is back (peer-joined, session-joined, any signal received). */
++  const cancelPeerLeftError = useCallback(() => {
++    if (peerLeftTimerRef.current) {
++      clearTimeout(peerLeftTimerRef.current);
++      peerLeftTimerRef.current = null;
++    }
++  }, []);
++
+   useEffect(() => {
+     sessionIdRef.current = state.sessionId;
+   }, [state.sessionId]);
+@@ -204,9 +238,11 @@ export function useBeamSession(sessionIdParam?: string | null) {
+       signalingRef.current = sessionSignaling;
+       sessionSignaling.onConnect = () => sessionSignaling.joinSession(sid, deviceInfo());
+       sessionSignaling.onSessionJoined = ({ sender }) => {
++        cancelPeerLeftError();
+         patch({ phase: "waiting", peerDevice: sender?.name ? { label: sender.name, short: sender.platform ?? "" } : null });
+       };
+       sessionSignaling.onSignal = (sigdata) => {
++        cancelPeerLeftError();
+         let transfer = transferRef.current;
+         if (!transfer) {
+           transfer = makeTransfer("receiver", sid, sessionSignaling, patch, setState, reconnectPrevPhase);
+@@ -215,9 +251,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
+         void transfer.handleSignal(sigdata);
+       };
+       sessionSignaling.onPeerLeft = () => {
+-        setState((s) =>
+-          s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
+-        );
++        schedulePeerLeftError("The other device disconnected.");
+       };
+       sessionSignaling.onSessionExpired = () => patch({ phase: "expired" });
+       sessionSignaling.onError = (msg) => patch({ error: msg });
+@@ -227,7 +261,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
+       lobby.disconnect();
+       lobbyRef.current = null;
+     };
+-  }, [patch]);
++  }, [patch, cancelPeerLeftError, schedulePeerLeftError]);
+ 
+   // ---- Speed sampler (tracks peak too) ----
+   useEffect(() => {
+@@ -278,6 +312,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
+     signalingRef.current = signaling;
+     signaling.onConnect = () => signaling.joinSession(sessionIdParam, deviceInfo());
+     signaling.onSessionJoined = ({ sender }) => {
++      cancelPeerLeftError();
+       patch({
+         phase: "waiting",
+         peerDevice: sender?.name ? labelToDescriptor(sender.name) : null,
+@@ -289,11 +324,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
+     };
+     signaling.onSessionExpired = () => patch({ phase: "expired" });
+     signaling.onPeerLeft = () => {
+-      setState((s) =>
+-        s.phase === "done" ? s : { ...s, phase: "error", error: "The other device disconnected." },
+-      );
++      // Don't immediately error — wait PEER_LEFT_GRACE_MS for the peer to
++      // come back. Brief signaling disconnects are common on mobile.
++      schedulePeerLeftError("The other device disconnected.");
+     };
+     signaling.onSignal = (sigdata) => {
++      cancelPeerLeftError();
+       let transfer = transferRef.current;
+       if (!transfer) {
+         transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
+@@ -310,7 +346,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
+       transferRef.current = null;
+       signalingRef.current = null;
+     };
+-  }, [mode, sessionIdParam]);
++  }, [mode, sessionIdParam, cancelPeerLeftError, schedulePeerLeftError]);
+ 
+   // ---- Sender actions ----
+   const sendToNearbyRef = useRef<((socketId: string, deviceLabel?: string) => void) | null>(null);
+@@ -369,25 +405,37 @@ export function useBeamSession(sessionIdParam?: string | null) {
+       signaling.onSessionCreated = ({ createdAt }) => patch({ createdAt });
+       signaling.onPeerJoined = ({ receiver }) => {
+         const sid = sessionIdRef.current ?? sessionId;
+-        patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
++        // Peer came back (or joined fresh) — cancel any pending peer-left
++        // error that was queued during a brief signaling disconnect.
++        cancelPeerLeftError();
++        patch({
++          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
++          // Transition to "connecting" so the sender UI shows "Connecting…"
++          // instead of the QR code while ICE is negotiating. Previously the
++          // sender stayed in "waiting" (showing the QR) for the entire 5-30s
++          // ICE negotiation, which looked like the connection wasn't taking.
++          phase: "connecting",
++        });
+         const transfer = makeTransfer("sender", sid, signaling, patch, setState, reconnectPrevPhase);
+         transfer.queueFiles(rawFilesRef.current);
+         transferRef.current = transfer;
+         void transfer.createOffer();
+       };
+-      signaling.onSignal = (data) => transferRef.current?.handleSignal(data);
++      signaling.onSignal = (data) => {
++        // Any signal from the peer means they're alive — cancel pending errors.
++        cancelPeerLeftError();
++        transferRef.current?.handleSignal(data);
++      };
+       signaling.onPeerLeft = () => {
+-        setState((s) =>
+-          s.phase === "done"
+-            ? s
+-            : { ...s, phase: "error", error: "The receiver disconnected before the transfer finished." },
+-        );
++        // Don't immediately go to error — socket.io auto-reconnects on brief
++        // network blips. Wait PEER_LEFT_GRACE_MS for the peer to come back.
++        schedulePeerLeftError("The receiver disconnected before the transfer finished.");
+       };
+       signaling.onSessionExpired = () => patch({ phase: "expired" });
+       signaling.onError = (msg) => patch({ error: msg });
+       void getIceServers;
+     },
+-    [patch],
++    [patch, cancelPeerLeftError, schedulePeerLeftError],
+   );
+ 
+   /** Sender: pick a nearby device (by socketId) to send the selected files to.
+@@ -456,25 +504,29 @@ export function useBeamSession(sessionIdParam?: string | null) {
+         lobby.invite(socketId, sessionId, deviceInfo(), items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })));
+       };
+       signaling.onPeerJoined = ({ receiver }) => {
+-        patch({ peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null });
++        cancelPeerLeftError();
++        patch({
++          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
++          // Transition to "connecting" — see QR-path comment above.
++          phase: "connecting",
++        });
+         const transfer = makeTransfer("sender", sessionId, signaling, patch, setState, reconnectPrevPhase);
+         transfer.queueFiles(rawFilesRef.current);
+         transferRef.current = transfer;
+         void transfer.createOffer();
+       };
+-      signaling.onSignal = (data) => transferRef.current?.handleSignal(data);
++      signaling.onSignal = (data) => {
++        cancelPeerLeftError();
++        transferRef.current?.handleSignal(data);
++      };
+       signaling.onPeerLeft = () => {
+-        setState((s) =>
+-          s.phase === "done"
+-            ? s
+-            : { ...s, phase: "error", error: "The other device disconnected before the transfer finished." },
+-        );
++        schedulePeerLeftError("The other device disconnected before the transfer finished.");
+       };
+       signaling.onSessionExpired = () => patch({ phase: "expired" });
+       signaling.onError = (msg) => patch({ error: msg });
+       void getIceServers;
+     },
+-    [patch],
++    [patch, cancelPeerLeftError, schedulePeerLeftError],
+   );
+   // Keep the ref current so beginSending can call it without a forward-ref issue.
+   // Must run in an effect (not during render) per React's ref rules.
+@@ -551,6 +603,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
+   );
+ 
+   const reset = useCallback(() => {
++    if (peerLeftTimerRef.current) {
++      clearTimeout(peerLeftTimerRef.current);
++      peerLeftTimerRef.current = null;
++    }
+     transferRef.current?.releaseAll();
+     transferRef.current?.close();
+     transferRef.current = null;
+@@ -574,6 +630,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
+   }, [mode, patch, sessionIdParam]);
+ 
+   const cancel = useCallback(() => {
++    if (peerLeftTimerRef.current) {
++      clearTimeout(peerLeftTimerRef.current);
++      peerLeftTimerRef.current = null;
++    }
+     transferRef.current?.cancel();
+     patch({ phase: "error", error: "Transfer cancelled." });
+   }, [patch]);
+@@ -771,38 +831,45 @@ function makeTransfer(
+     });
+   };
+   t.onFileComplete = (file: IncomingFile, url: string) => {
++    // CRITICAL FIX for "stuck at 100% with no download button":
++    // Mark the file done + set the URL SYNCHRONOUSLY for ALL file types.
++    // The text/image fetch happens in the background and patches `text` /
++    // `imageUrl` in afterwards — the Download button renders immediately.
++    // (Previously the text branch awaited fetch(url).then(r => r.text())
++    // before marking done, so the user saw 100% with no button for the
++    // fetch duration — which could be 100s of ms or never resolve if the
++    // blob URL fetch was somehow interrupted.)
+     const isText = isTextLike(file.name, file.mime);
+     const isImage = isImageLike(file.name, file.mime);
++    setState((s) => ({
++      ...s,
++      files: s.files.map((f) =>
++        f.id === file.id
++          ? { ...f, status: "done" as const, received: f.size, url }
++          : f,
++      ),
++    }));
++    // Side-load text content (small text-like files) in the background.
+     if (url && isText && file.size > 0 && file.size <= 256 * 1024) {
+-      fetch(url).then((r) => r.text()).then((text) => {
+-        setState((s) => ({
+-          ...s,
+-          files: s.files.map((f) =>
+-            f.id === file.id ? { ...f, status: "done" as const, received: f.size, url, text } : f,
+-          ),
+-        }));
+-      }).catch(() => {
+-        setState((s) => ({
+-          ...s,
+-          files: s.files.map((f) =>
+-            f.id === file.id ? { ...f, status: "done" as const, received: f.size, url } : f,
+-          ),
+-        }));
+-      });
+-    } else if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
+-      setState((s) => ({
+-        ...s,
+-        files: s.files.map((f) =>
+-          f.id === file.id
+-            ? { ...f, status: "done" as const, received: f.size, url: url || f.url, imageUrl: url }
+-            : f,
+-        ),
+-      }));
+-    } else {
++      fetch(url)
++        .then((r) => r.text())
++        .then((text) => {
++          setState((s) => ({
++            ...s,
++            files: s.files.map((f) =>
++              f.id === file.id ? { ...f, text } : f,
++            ),
++          }));
++        })
++        .catch(() => { /* URL already set; text is optional */ });
++    }
++    // Side-load image preview URL in the background (only for small images
++    // where reusing the object URL is fine — the FileRow already shows it).
++    if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
+       setState((s) => ({
+         ...s,
+         files: s.files.map((f) =>
+-          f.id === file.id ? { ...f, status: "done" as const, received: f.size, url: url || f.url } : f,
++          f.id === file.id ? { ...f, imageUrl: url } : f,
+         ),
+       }));
+     }
+@@ -824,16 +891,34 @@ function makeTransfer(
+         : s.files,
+     }));
+     // RECEIVER SAFETY NET: if any files are still "transferring" after 5s
+-    // (finalizeFile should have finished by then), force them to "done" with
+-    // whatever URL they have (or none). This prevents a permanent stuck state
+-    // if finalizeFile somehow doesn't fire onAllComplete.
++    // (finalizeFile should have finished by then), force them to "done" and
++    // ALSO recover any URL that finalizeFile created but onFileComplete didn't
++    // get to apply (e.g., the React state batch raced). This prevents a
++    // permanent stuck state if finalizeFile somehow doesn't fire onAllComplete.
+     if (role === "receiver") {
+       setTimeout(() => {
+         setState((s) => ({
+           ...s,
+-          files: s.files.map((f) =>
+-            f.status === "transferring" ? { ...f, status: "done" as const, received: f.size } : f,
+-          ),
++          files: s.files.map((f) => {
++            if (f.status === "transferring") {
++              // Try to recover the URL from the transfer's incoming map
++              // (it may have been finalized but the onFileComplete callback
++              // raced with the React state update).
++              const recoveredUrl = t.getFinalizedUrl(f.id);
++              return {
++                ...f,
++                status: "done" as const,
++                received: f.size,
++                url: f.url ?? recoveredUrl,
++              };
++            }
++            // Also catch any "done" file that somehow has no URL.
++            if (f.status === "done" && !f.url) {
++              const recoveredUrl = t.getFinalizedUrl(f.id);
++              return recoveredUrl ? { ...f, url: recoveredUrl } : f;
++            }
++            return f;
++          }),
+         }));
+       }, 5000);
+     }
+diff --git a/src/lib/webrtc.ts b/src/lib/webrtc.ts
+index 6f47467..cd51ee7 100644
+--- a/src/lib/webrtc.ts
++++ b/src/lib/webrtc.ts
+@@ -46,6 +46,12 @@ const NUM_DATA_CHANNELS = 3; // striped data channels (excludes the control chan
+ const HIGH_WATERMARK = 8 * 1024 * 1024; // 8MB — pause when a channel's buffer exceeds this
+ const LOW_WATERMARK = 2 * 1024 * 1024; // 2MB — resume when it drains below this
+ const RECONNECT_DEBOUNCE_MS = 1500; // wait this long before showing "reconnecting"
++// Hard ceilings that escalate a hung connection to "failed" instead of waiting forever.
++// These fix the "stuck at connecting" symptom on hostile networks (symmetric NAT, UDP
++// blocked, etc.) where ICE can sit in "checking" indefinitely without ever firing "failed".
++const ICE_CONNECT_TIMEOUT_MS = 30_000; // no ICE connection in 30s → fail
++const RECONNECTING_TIMEOUT_MS = 30_000; // ICE "disconnected" → "failed" after 30s
++const CHANNEL_OPEN_TIMEOUT_MS = 15_000; // channels never open after ICE connects → fail
+ 
+ // Binary header layout for each data-channel message: 4 bytes fileSeq + 4 bytes chunkIndex
+ const HEADER_BYTES = 8;
+@@ -60,6 +66,7 @@ export type IncomingFile = {
+ export type TransferState =
+   | "idle"
+   | "waiting"
++  | "connecting"
+   | "connected"
+   | "transferring"
+   | "reconnecting"
+@@ -137,6 +144,10 @@ export class BeamTransfer {
+   private loggedWinner = false;
+   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+   private isReconnecting = false;
++  // Hard-fail timers (fix "stuck at connecting" forever).
++  private iceConnectTimer: ReturnType<typeof setTimeout> | null = null;
++  private reconnectingFailTimer: ReturnType<typeof setTimeout> | null = null;
++  private channelOpenTimer: ReturnType<typeof setTimeout> | null = null;
+ 
+   constructor(
+     role: "sender" | "receiver",
+@@ -164,6 +175,20 @@ export class BeamTransfer {
+       }
+     };
+ 
++    // ICE gathering / connection timeout — fire onFailed if ICE never connects.
++    // This is the #1 fix for "stuck at connecting": on hostile networks (symmetric
++    // NAT, UDP blocked, enterprise firewall), ICE can sit in "checking" forever
++    // without ever firing "failed" in some browsers. We add our own hard ceiling.
++    this.iceConnectTimer = setTimeout(() => {
++      if (!this.pc) return;
++      const st = this.pc.iceConnectionState;
++      if (st !== "connected" && st !== "completed") {
++        this.onFailed?.(
++          "Couldn't connect peer-to-peer within 30s. The network may be blocking WebRTC traffic — try a different network or a TURN relay.",
++        );
++      }
++    }, ICE_CONNECT_TIMEOUT_MS);
++
+     // ICE connection state → debounced reconnect / fail UX + winner-candidate logging
+     pc.oniceconnectionstatechange = () => {
+       const st = pc.iceConnectionState;
+@@ -174,12 +199,30 @@ export class BeamTransfer {
+         this.reconnectTimer = setTimeout(() => {
+           this.isReconnecting = true;
+           this.onReconnecting?.();
++          // Escalate to "failed" if reconnection takes longer than 30s — don't
++          // let the user sit in "reconnecting" forever.
++          if (!this.reconnectingFailTimer) {
++            this.reconnectingFailTimer = setTimeout(() => {
++              if (this.pc && this.pc.iceConnectionState === "disconnected") {
++                this.onFailed?.("Connection lost and couldn't recover after 30s. The other device may have left.");
++              }
++            }, RECONNECTING_TIMEOUT_MS);
++          }
+         }, RECONNECT_DEBOUNCE_MS);
+       } else if (st === "connected" || st === "completed") {
+         if (this.reconnectTimer) {
+           clearTimeout(this.reconnectTimer);
+           this.reconnectTimer = null;
+         }
++        if (this.reconnectingFailTimer) {
++          clearTimeout(this.reconnectingFailTimer);
++          this.reconnectingFailTimer = null;
++        }
++        // ICE made it — cancel the initial-connect timeout so we don't false-fire.
++        if (this.iceConnectTimer) {
++          clearTimeout(this.iceConnectTimer);
++          this.iceConnectTimer = null;
++        }
+         this.logSelectedCandidateType();
+         if (this.isReconnecting) {
+           this.isReconnecting = false;
+@@ -190,6 +233,14 @@ export class BeamTransfer {
+           clearTimeout(this.reconnectTimer);
+           this.reconnectTimer = null;
+         }
++        if (this.reconnectingFailTimer) {
++          clearTimeout(this.reconnectingFailTimer);
++          this.reconnectingFailTimer = null;
++        }
++        if (this.iceConnectTimer) {
++          clearTimeout(this.iceConnectTimer);
++          this.iceConnectTimer = null;
++        }
+         this.onFailed?.("Connection failed. The network may be blocking peer-to-peer traffic.");
+       }
+     };
+@@ -218,6 +269,25 @@ export class BeamTransfer {
+       const ch = pc.createDataChannel(`d${i}`, { ordered: false });
+       this.attachChannel(ch, false);
+     }
++    // Channel-open fallback: if not all channels open within CHANNEL_OPEN_TIMEOUT_MS
++    // after ICE connects, fire onChannelOpen anyway with whatever's open so the
++    // transfer can proceed. If NONE are open after this ceiling, fire onFailed.
++    if (!this.channelOpenTimer) {
++      this.channelOpenTimer = setTimeout(() => {
++        if (this.channelsOpen >= 1 + NUM_DATA_CHANNELS) return;
++        if (this.channelsOpen === 0) {
++          this.onFailed?.("Data channels never opened. The peer may not be ready, or the connection dropped.");
++        } else {
++          // Partial open — proceed with what we have. Better than hanging.
++          console.warn(`[beam-webrtc] Channel-open timeout fired with ${this.channelsOpen}/${1 + NUM_DATA_CHANNELS} open — proceeding with available channels.`);
++          this.onChannelOpen?.();
++          this.startQualityPolling();
++          if (this.role === "sender" && !this.sending) {
++            void this.sendQueuedFiles();
++          }
++        }
++      }, CHANNEL_OPEN_TIMEOUT_MS);
++    }
+     const offer = await pc.createOffer();
+     await pc.setLocalDescription(offer);
+     this.signaling.sendSignal(this.sessionId, { kind: "offer", payload: offer });
+@@ -262,6 +332,11 @@ export class BeamTransfer {
+       this.channelsOpen++;
+       // All channels (1 ctrl + N data) open → transfer can begin.
+       if (this.channelsOpen === 1 + NUM_DATA_CHANNELS) {
++        // Cancel the fallback timer — we got here the happy-path way.
++        if (this.channelOpenTimer) {
++          clearTimeout(this.channelOpenTimer);
++          this.channelOpenTimer = null;
++        }
+         this.onChannelOpen?.();
+         this.startQualityPolling();
+         if (this.role === "sender" && !this.sending) {
+@@ -320,9 +395,25 @@ export class BeamTransfer {
+         void this.finalizeFile(msg.seq);
+         break;
+       }
+-      case "done":
++      case "done": {
++        // CRITICAL FIX for "stuck at 100% with no download button":
++        // Before announcing completion, sweep through every file we've heard
++        // about (via file-start) and ensure it gets finalized. This catches:
++        //   • empty files (no chunks ever sent → no auto-finalize trigger)
++        //   • files where the file-end control message was lost mid-transfer
++        //   • files where finalizeFile's polling timed out before chunks arrived
++        // Each finalizeFile call ALWAYS fires onFileComplete (even with zero
++        // chunks → empty blob → real URL). So the receiver's UI gets a real
++        // download URL for every file, never a phantom "done with no URL".
++        for (const seq of Array.from(this.incoming.keys())) {
++          const entry = this.incoming.get(seq);
++          if (entry && !entry.finalized) {
++            void this.finalizeFile(seq);
++          }
++        }
+         this.onAllComplete?.();
+         break;
++      }
+       case "cancel":
+         this.onCancel?.();
+         break;
+@@ -452,16 +543,29 @@ export class BeamTransfer {
+    * Blob + fire onFileComplete. Handles the case where the ordered control
+    * channel's file-end arrives before the unordered data channels finish
+    * delivering chunks — polls up to ~3s, then finalizes with whatever's there.
++   *
++   * CRITICAL: We set `entry.finalized = true` IMMEDIATELY after the guard
++   * check, BEFORE any `await`. This prevents the race where two concurrent
++   * callers (one from `handleChunkMessage`'s auto-finalize trigger, one from
++   * `handleControlMessage`'s file-end) both pass the guard, both run the
++   * polling loop, both reassemble, and both fire `onFileComplete` — leaking
++   * a blob URL and confusing the React state.
+    */
+   private async finalizeFile(seq: number) {
+     const entry = this.incoming.get(seq);
+     if (!entry || entry.finalized) return;
+-    // Wait for all expected chunks (poll every 20ms, up to 3s).
+-    const deadline = Date.now() + 3000;
+-    while (entry.count < entry.expectedCount && Date.now() < deadline) {
+-      await new Promise((r) => setTimeout(r, 20));
++    entry.finalized = true; // ← claim now, before any await
++
++    // Skip polling entirely if we've already received all expected bytes (the
++    // happy path), OR if the file is empty (no chunks will ever arrive). Both
++    // are common cases — polling them just delays the URL by 3s.
++    const needsPoll = entry.received < entry.file.size && entry.count < entry.expectedCount;
++    if (needsPoll) {
++      const deadline = Date.now() + 3000;
++      while (entry.count < entry.expectedCount && Date.now() < deadline) {
++        await new Promise((r) => setTimeout(r, 20));
++      }
+     }
+-    entry.finalized = true;
+     // Reassemble in index order.
+     const ordered: ArrayBuffer[] = [];
+     for (let i = 0; i < entry.count; i++) {
+@@ -578,6 +682,19 @@ export class BeamTransfer {
+     this.incoming.clear();
+   }
+ 
++  /**
++   * Look up the object URL for a given file ID, if finalizeFile has run.
++   * Used by the React hook's safety net to recover URLs that were created
++   * AFTER onFileComplete fired (e.g., text-fetch path was still pending when
++   * onAllComplete marked the file done without a URL).
++   */
++  getFinalizedUrl(id: string): string | undefined {
++    for (const entry of this.incoming.values()) {
++      if (entry.file.id === id && entry.finalized) return entry.url;
++    }
++    return undefined;
++  }
++
+   cancel() {
+     if (this.ctrlCh && this.ctrlCh.readyState === "open") {
+       try { this.ctrlCh.send(JSON.stringify({ type: "cancel" } satisfies ControlMessage)); } catch { /* ignore */ }
+@@ -593,6 +710,18 @@ export class BeamTransfer {
+       clearTimeout(this.reconnectTimer);
+       this.reconnectTimer = null;
+     }
++    if (this.iceConnectTimer) {
++      clearTimeout(this.iceConnectTimer);
++      this.iceConnectTimer = null;
++    }
++    if (this.reconnectingFailTimer) {
++      clearTimeout(this.reconnectingFailTimer);
++      this.reconnectingFailTimer = null;
++    }
++    if (this.channelOpenTimer) {
++      clearTimeout(this.channelOpenTimer);
++      this.channelOpenTimer = null;
++    }
+     if (this.pc) {
+       this.pc.onicecandidate = null;
+       this.pc.oniceconnectionstatechange = null;

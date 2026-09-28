@@ -46,6 +46,12 @@ const NUM_DATA_CHANNELS = 3; // striped data channels (excludes the control chan
 const HIGH_WATERMARK = 8 * 1024 * 1024; // 8MB — pause when a channel's buffer exceeds this
 const LOW_WATERMARK = 2 * 1024 * 1024; // 2MB — resume when it drains below this
 const RECONNECT_DEBOUNCE_MS = 1500; // wait this long before showing "reconnecting"
+// Hard ceilings that escalate a hung connection to "failed" instead of waiting forever.
+// These fix the "stuck at connecting" symptom on hostile networks (symmetric NAT, UDP
+// blocked, etc.) where ICE can sit in "checking" indefinitely without ever firing "failed".
+const ICE_CONNECT_TIMEOUT_MS = 30_000; // no ICE connection in 30s → fail
+const RECONNECTING_TIMEOUT_MS = 30_000; // ICE "disconnected" → "failed" after 30s
+const CHANNEL_OPEN_TIMEOUT_MS = 15_000; // channels never open after ICE connects → fail
 
 // Binary header layout for each data-channel message: 4 bytes fileSeq + 4 bytes chunkIndex
 const HEADER_BYTES = 8;
@@ -60,6 +66,7 @@ export type IncomingFile = {
 export type TransferState =
   | "idle"
   | "waiting"
+  | "connecting"
   | "connected"
   | "transferring"
   | "reconnecting"
@@ -137,6 +144,10 @@ export class BeamTransfer {
   private loggedWinner = false;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private isReconnecting = false;
+  // Hard-fail timers (fix "stuck at connecting" forever).
+  private iceConnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private reconnectingFailTimer: ReturnType<typeof setTimeout> | null = null;
+  private channelOpenTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(
     role: "sender" | "receiver",
@@ -164,6 +175,20 @@ export class BeamTransfer {
       }
     };
 
+    // ICE gathering / connection timeout — fire onFailed if ICE never connects.
+    // This is the #1 fix for "stuck at connecting": on hostile networks (symmetric
+    // NAT, UDP blocked, enterprise firewall), ICE can sit in "checking" forever
+    // without ever firing "failed" in some browsers. We add our own hard ceiling.
+    this.iceConnectTimer = setTimeout(() => {
+      if (!this.pc) return;
+      const st = this.pc.iceConnectionState;
+      if (st !== "connected" && st !== "completed") {
+        this.onFailed?.(
+          "Couldn't connect peer-to-peer within 30s. The network may be blocking WebRTC traffic — try a different network or a TURN relay.",
+        );
+      }
+    }, ICE_CONNECT_TIMEOUT_MS);
+
     // ICE connection state → debounced reconnect / fail UX + winner-candidate logging
     pc.oniceconnectionstatechange = () => {
       const st = pc.iceConnectionState;
@@ -174,11 +199,29 @@ export class BeamTransfer {
         this.reconnectTimer = setTimeout(() => {
           this.isReconnecting = true;
           this.onReconnecting?.();
+          // Escalate to "failed" if reconnection takes longer than 30s — don't
+          // let the user sit in "reconnecting" forever.
+          if (!this.reconnectingFailTimer) {
+            this.reconnectingFailTimer = setTimeout(() => {
+              if (this.pc && this.pc.iceConnectionState === "disconnected") {
+                this.onFailed?.("Connection lost and couldn't recover after 30s. The other device may have left.");
+              }
+            }, RECONNECTING_TIMEOUT_MS);
+          }
         }, RECONNECT_DEBOUNCE_MS);
       } else if (st === "connected" || st === "completed") {
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
+        }
+        if (this.reconnectingFailTimer) {
+          clearTimeout(this.reconnectingFailTimer);
+          this.reconnectingFailTimer = null;
+        }
+        // ICE made it — cancel the initial-connect timeout so we don't false-fire.
+        if (this.iceConnectTimer) {
+          clearTimeout(this.iceConnectTimer);
+          this.iceConnectTimer = null;
         }
         this.logSelectedCandidateType();
         if (this.isReconnecting) {
@@ -189,6 +232,14 @@ export class BeamTransfer {
         if (this.reconnectTimer) {
           clearTimeout(this.reconnectTimer);
           this.reconnectTimer = null;
+        }
+        if (this.reconnectingFailTimer) {
+          clearTimeout(this.reconnectingFailTimer);
+          this.reconnectingFailTimer = null;
+        }
+        if (this.iceConnectTimer) {
+          clearTimeout(this.iceConnectTimer);
+          this.iceConnectTimer = null;
         }
         this.onFailed?.("Connection failed. The network may be blocking peer-to-peer traffic.");
       }
@@ -217,6 +268,25 @@ export class BeamTransfer {
     for (let i = 0; i < NUM_DATA_CHANNELS; i++) {
       const ch = pc.createDataChannel(`d${i}`, { ordered: false });
       this.attachChannel(ch, false);
+    }
+    // Channel-open fallback: if not all channels open within CHANNEL_OPEN_TIMEOUT_MS
+    // after ICE connects, fire onChannelOpen anyway with whatever's open so the
+    // transfer can proceed. If NONE are open after this ceiling, fire onFailed.
+    if (!this.channelOpenTimer) {
+      this.channelOpenTimer = setTimeout(() => {
+        if (this.channelsOpen >= 1 + NUM_DATA_CHANNELS) return;
+        if (this.channelsOpen === 0) {
+          this.onFailed?.("Data channels never opened. The peer may not be ready, or the connection dropped.");
+        } else {
+          // Partial open — proceed with what we have. Better than hanging.
+          console.warn(`[beam-webrtc] Channel-open timeout fired with ${this.channelsOpen}/${1 + NUM_DATA_CHANNELS} open — proceeding with available channels.`);
+          this.onChannelOpen?.();
+          this.startQualityPolling();
+          if (this.role === "sender" && !this.sending) {
+            void this.sendQueuedFiles();
+          }
+        }
+      }, CHANNEL_OPEN_TIMEOUT_MS);
     }
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -262,6 +332,11 @@ export class BeamTransfer {
       this.channelsOpen++;
       // All channels (1 ctrl + N data) open → transfer can begin.
       if (this.channelsOpen === 1 + NUM_DATA_CHANNELS) {
+        // Cancel the fallback timer — we got here the happy-path way.
+        if (this.channelOpenTimer) {
+          clearTimeout(this.channelOpenTimer);
+          this.channelOpenTimer = null;
+        }
         this.onChannelOpen?.();
         this.startQualityPolling();
         if (this.role === "sender" && !this.sending) {
@@ -320,9 +395,25 @@ export class BeamTransfer {
         void this.finalizeFile(msg.seq);
         break;
       }
-      case "done":
+      case "done": {
+        // CRITICAL FIX for "stuck at 100% with no download button":
+        // Before announcing completion, sweep through every file we've heard
+        // about (via file-start) and ensure it gets finalized. This catches:
+        //   • empty files (no chunks ever sent → no auto-finalize trigger)
+        //   • files where the file-end control message was lost mid-transfer
+        //   • files where finalizeFile's polling timed out before chunks arrived
+        // Each finalizeFile call ALWAYS fires onFileComplete (even with zero
+        // chunks → empty blob → real URL). So the receiver's UI gets a real
+        // download URL for every file, never a phantom "done with no URL".
+        for (const seq of Array.from(this.incoming.keys())) {
+          const entry = this.incoming.get(seq);
+          if (entry && !entry.finalized) {
+            void this.finalizeFile(seq);
+          }
+        }
         this.onAllComplete?.();
         break;
+      }
       case "cancel":
         this.onCancel?.();
         break;
@@ -452,16 +543,29 @@ export class BeamTransfer {
    * Blob + fire onFileComplete. Handles the case where the ordered control
    * channel's file-end arrives before the unordered data channels finish
    * delivering chunks — polls up to ~3s, then finalizes with whatever's there.
+   *
+   * CRITICAL: We set `entry.finalized = true` IMMEDIATELY after the guard
+   * check, BEFORE any `await`. This prevents the race where two concurrent
+   * callers (one from `handleChunkMessage`'s auto-finalize trigger, one from
+   * `handleControlMessage`'s file-end) both pass the guard, both run the
+   * polling loop, both reassemble, and both fire `onFileComplete` — leaking
+   * a blob URL and confusing the React state.
    */
   private async finalizeFile(seq: number) {
     const entry = this.incoming.get(seq);
     if (!entry || entry.finalized) return;
-    // Wait for all expected chunks (poll every 20ms, up to 3s).
-    const deadline = Date.now() + 3000;
-    while (entry.count < entry.expectedCount && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 20));
+    entry.finalized = true; // ← claim now, before any await
+
+    // Skip polling entirely if we've already received all expected bytes (the
+    // happy path), OR if the file is empty (no chunks will ever arrive). Both
+    // are common cases — polling them just delays the URL by 3s.
+    const needsPoll = entry.received < entry.file.size && entry.count < entry.expectedCount;
+    if (needsPoll) {
+      const deadline = Date.now() + 3000;
+      while (entry.count < entry.expectedCount && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 20));
+      }
     }
-    entry.finalized = true;
     // Reassemble in index order.
     const ordered: ArrayBuffer[] = [];
     for (let i = 0; i < entry.count; i++) {
@@ -578,6 +682,19 @@ export class BeamTransfer {
     this.incoming.clear();
   }
 
+  /**
+   * Look up the object URL for a given file ID, if finalizeFile has run.
+   * Used by the React hook's safety net to recover URLs that were created
+   * AFTER onFileComplete fired (e.g., text-fetch path was still pending when
+   * onAllComplete marked the file done without a URL).
+   */
+  getFinalizedUrl(id: string): string | undefined {
+    for (const entry of this.incoming.values()) {
+      if (entry.file.id === id && entry.finalized) return entry.url;
+    }
+    return undefined;
+  }
+
   cancel() {
     if (this.ctrlCh && this.ctrlCh.readyState === "open") {
       try { this.ctrlCh.send(JSON.stringify({ type: "cancel" } satisfies ControlMessage)); } catch { /* ignore */ }
@@ -592,6 +709,18 @@ export class BeamTransfer {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+    if (this.iceConnectTimer) {
+      clearTimeout(this.iceConnectTimer);
+      this.iceConnectTimer = null;
+    }
+    if (this.reconnectingFailTimer) {
+      clearTimeout(this.reconnectingFailTimer);
+      this.reconnectingFailTimer = null;
+    }
+    if (this.channelOpenTimer) {
+      clearTimeout(this.channelOpenTimer);
+      this.channelOpenTimer = null;
     }
     if (this.pc) {
       this.pc.onicecandidate = null;
