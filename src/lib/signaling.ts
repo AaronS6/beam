@@ -39,10 +39,13 @@ export type InvitePayload = {
 
 export type RelayShare = { id: string; name: string; size: number; mime?: string };
 
+export type RelayManifestEntry = { name: string; size: number; mime?: string };
+
 export type SignalData =
   | { kind: "offer"; payload: RTCSessionDescriptionInit }
   | { kind: "answer"; payload: RTCSessionDescriptionInit }
   | { kind: "candidate"; payload: RTCIceCandidateInit }
+  | { kind: "relay-start"; payload: { files: RelayManifestEntry[] } }
   | { kind: "relay-meta"; payload: { files: RelayShare[] } }
   | { kind: "relay-complete"; payload: Record<string, never> };
 

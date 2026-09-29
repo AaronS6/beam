@@ -75,7 +75,7 @@ const CLEANUP_INTERVAL_MS = 60 * 1000;
 // Only these `data.kind` values may be relayed. Anything else is dropped —
 // defense in depth so the server is never an arbitrary message bus (and can
 // never accidentally become a file-byte channel).
-const ALLOWED_SIGNAL_KINDS = new Set(["offer", "answer", "candidate", "relay-meta", "relay-complete"]);
+const ALLOWED_SIGNAL_KINDS = new Set(["offer", "answer", "candidate", "relay-start", "relay-meta", "relay-complete"]);
 
 type DeviceInfo = {
   name?: string;

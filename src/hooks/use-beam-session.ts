@@ -321,6 +321,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
       sessionSignaling.onSignal = (sigdata) => {
         cancelPeerLeftError();
         // Relay path (same handler shape as the QR-receiver path).
+        if (sigdata.kind === "relay-start") {
+          handleRelayStart(sigdata.payload.files, setState);
+          return;
+        }
         if (sigdata.kind === "relay-meta") {
           const keyB64 = keyRef.current;
           if (!keyB64) {
@@ -421,6 +425,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
       // the files to /api/share and sent us the share manifest. We fetch +
       // decrypt each one locally with the key from the URL fragment. The
       // signaling server only relayed the tiny manifest, never file bytes.
+      if (sigdata.kind === "relay-start") {
+        handleRelayStart(sigdata.payload.files, setState);
+        return;
+      }
       if (sigdata.kind === "relay-meta") {
         const keyB64 = keyRef.current;
         if (!keyB64) {
@@ -1245,6 +1253,37 @@ function isImageLike(name: string, mime?: string): boolean {
 
 /** Sender relay: encrypt + upload each file, send the share manifest to the
  *  receiver via the signaling server, then mark the phase done. */
+
+/** Receiver: handle a `relay-start` signal (sent by the sender the instant it
+ *  begins the relay upload, BEFORE the upload completes). Shows the file list
+ *  + "Receiving files" immediately so the receiver isn't stuck on the dark
+ *  "Connecting…" screen for the entire upload duration (which looked like a
+ *  stuck black screen). The IDs match runReceiverRelay's (`relay-${i}`) so
+ *  when relay-meta arrives + the download starts, the rows don't flicker. */
+function handleRelayStart(
+  manifest: { name: string; size: number; mime?: string }[],
+  setState: React.Dispatch<React.SetStateAction<SessionState>>,
+) {
+  const items: FileItem[] = manifest.map((f, i) => ({
+    id: `relay-${i}`,
+    name: f.name,
+    size: f.size,
+    mime: f.mime,
+    received: 0,
+    status: "queued" as const,
+  }));
+  setState((s) => ({
+    ...s,
+    files: items,
+    totalBytes: items.reduce((a, b) => a + b.size, 0),
+    receivedBytes: 0,
+    phase: "transferring",
+    transferStartedAt: Date.now(),
+    transferEndedAt: null,
+    error: null,
+  }));
+}
+
 async function runSenderRelay(
   sessionId: string,
   signaling: SignalingClient,
@@ -1256,6 +1295,17 @@ async function runSenderRelay(
 ) {
   try {
     const key = await importTransferKey(keyB64);
+    // Send a relay-start signal IMMEDIATELY (before the upload) so the
+    // receiver stops showing "Connecting…" + shows "Receiving files" with
+    // the file list right away. Without this, the receiver sits on the dark
+    // "Connecting…" screen for the entire upload duration (which can be a
+    // few seconds for larger files), which looks like a stuck black screen.
+    signaling.sendSignal(sessionId, {
+      kind: "relay-start",
+      payload: {
+        files: files.map((f) => ({ name: f.name || `file`, size: f.size, mime: f.type || undefined })),
+      },
+    });
     let receivedBytes = 0;
     const shares: RelayShare[] = [];
     for (let i = 0; i < files.length; i++) {
@@ -1332,7 +1382,7 @@ async function runReceiverRelay(
     const key = await importTransferKey(keyB64);
     // Build the file list from the shares.
     const items: FileItem[] = shares.map((sh, i) => ({
-      id: `relay-${i}-${sh.id}`,
+      id: `relay-${i}`,
       name: sh.name,
       size: sh.size,
       mime: sh.mime,

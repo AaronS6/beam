@@ -379,3 +379,25 @@ Stage Summary:
 - Added a visible "Relay" badge + "Sending via encrypted server relay" subtext so the user can confirm relay is being used.
 - Removed the "Files that go straight from you to them" hero bubble.
 - Files changed: mini-services/signaling-server/index.ts (invite passes keyB64), src/hooks/use-beam-session.ts (onPeerJoined skips "connecting" for relay), src/components/beam/sender-panel.tsx (Relay badge + subtext + removed duplicate transferMode destructure), src/components/beam/beam-app.tsx (removed hero bubble), src/lib/relay.ts (removed diagnostic logs).
+
+---
+Task ID: 24
+Agent: main (Z.ai Code)
+Task: Fix the "stuck on black screen for a few seconds" after scanning the QR (relay mode) — the receiver sat on the dark "Connecting…" screen during the sender's upload.
+
+Work Log:
+- Root cause: in relay mode, runSenderRelay uploaded the ENTIRE file to /api/relay BEFORE sending relay-meta. The receiver, which only knew "a transfer is coming" after joining the session, sat at the "Connecting…" (waiting) phase for the full upload duration. On a real network with a multi-MB file, that's a few seconds of the dark "Connecting…" screen, which looked like a stuck black screen.
+- FIX: added a `relay-start` signal that the sender fires the INSTANT it enters the relay path (before the upload loop), carrying just the file manifest (name/size/mime, no share IDs yet — those don't exist until the upload completes).
+  * src/lib/signaling.ts: added `relay-start` to SignalData + the RelayManifestEntry type.
+  * mini-services/signaling-server/index.ts: added "relay-start" to ALLOWED_SIGNAL_KINDS.
+  * runSenderRelay (src/hooks/use-beam-session.ts): sends `relay-start` right after importing the key, before the upload loop.
+  * Added a shared `handleRelayStart(manifest, setState)` module-level helper that builds the file list (`relay-${i}` IDs, matching runReceiverRelay) + flips the phase to "transferring" so the receiver shows "Receiving files" immediately.
+  * Wired `handleRelayStart` into BOTH receiver onSignal handlers (the QR-receiver mount path + the lobby-invite path) — runs before the relay-meta check.
+  * Aligned the file IDs: runReceiverRelay now uses `relay-${i}` (was `relay-${i}-${sh.id}`) so when relay-meta arrives + the download starts, the file rows don't flicker (same React keys).
+- Result: the receiver now shows "Receiving files" + the file list the moment the sender starts the relay upload, instead of sitting on "Connecting…" for the upload duration. The brief "Connecting…" while the signaling socket connects (usually <1s) is unavoidable, but the multi-second "black screen" during the upload is gone.
+- Verified end-to-end (5 MB file, two isolated sessions): the full relay lifecycle ran cleanly (POST upload 200 → GET download 200 → DELETE cleanup 200), no console errors on either side, both reached done. The relay-start signal fires (it's a socket event, not an HTTP call, so it doesn't appear in the HTTP dev log, but the receiver's "Receiving files" state appearing before the download confirms it's received).
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- "Stuck on black screen for a few seconds after scanning QR" is fixed. The sender now fires a `relay-start` signal the instant it begins the relay upload, so the receiver shows "Receiving files" + the file list immediately instead of sitting on the dark "Connecting…" screen for the entire upload duration. The unavoidable <1s signaling-connection delay remains, but the multi-second upload-period "black screen" is gone.
+- Files changed: src/lib/signaling.ts (relay-start kind), mini-services/signaling-server/index.ts (whitelist), src/hooks/use-beam-session.ts (runSenderRelay sends relay-start + handleRelayStart helper + both receiver onSignal handlers handle it + aligned file IDs).
