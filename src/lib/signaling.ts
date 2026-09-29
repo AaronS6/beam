@@ -43,7 +43,8 @@ export type SignalData =
   | { kind: "offer"; payload: RTCSessionDescriptionInit }
   | { kind: "answer"; payload: RTCSessionDescriptionInit }
   | { kind: "candidate"; payload: RTCIceCandidateInit }
-  | { kind: "relay-meta"; payload: { files: RelayShare[] } };
+  | { kind: "relay-meta"; payload: { files: RelayShare[] } }
+  | { kind: "relay-complete"; payload: Record<string, never> };
 
 const SIGNALING_PORT = "3003";
 

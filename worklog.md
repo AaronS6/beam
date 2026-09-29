@@ -320,3 +320,62 @@ Stage Summary:
 - Relay confirmed to work on the same network (it always did — it's HTTP-based; the description now says so explicitly).
 - All em-dash separators removed from the rendered site text (0 em-dashes verified via in-page eval).
 - Files changed: src/lib/transfer-mode.ts, src/hooks/use-beam-session.ts, + the sed pass across all src/components/beam/*.tsx + src/lib/webrtc.ts.
+
+---
+Task ID: 22
+Agent: main (Z.ai Code)
+Task: Fix three relay/Auto-mode bugs: (1) sender shows "All delivered" while still connecting, (2) toggle resets to Auto after Done + new file, (3) relay sometimes feels like Auto/Same Wi-Fi.
+
+Work Log:
+- Root-caused all three:
+  * #1 (premature done): runSenderRelay set phase="done" the instant it sent relay-meta, before the receiver had downloaded/decrypted anything. The sender said "All delivered" while the receiver was still downloading.
+  * #2 (reset flips to Auto): the reset() function used `...INITIAL` which hardcoded `transferMode: "auto"` (INITIAL.transferMode was "auto"). So pressing Done overwrote the user's "relay" choice with "auto" — the toggle showed Auto, and the next beginSending read transferModeRef="auto" → used Auto (P2P first).
+  * #3 (relay feels like Auto): a direct symptom of #2. After the reset flipped the mode to "auto", the next transfer used Auto (P2P first with an 8s relay fallback) instead of pure relay. So relay "felt like auto".
+
+- Fixed #2 + #3 (the reset bug):
+  * Changed INITIAL.transferMode from "auto" to "relay" (matches the DEFAULT_MODE in transfer-mode.ts).
+  * Changed reset() to preserve the user's chosen mode: `patch({ ...INITIAL, mode, sessionId, transferMode: transferModeRef.current })`. So pressing Done no longer flips Relay back to Auto.
+  * Added ack + fallback-timer cleanup to reset so stale waits don't hang across a reset.
+  * Verified: after Done, the toggle stays on Relay (checked=true), localStorage still "relay", and the next transfer's QR carries the #k= key fragment (confirming relay mode is used, not Auto). This kills both #2 and #3.
+
+- Fixed #1 (premature done) with a relay ack — same pattern as the P2P all-received ack but over the signaling socket (relay has no WebRTC channel):
+  * Added a "relay-complete" signal kind to SignalData (src/lib/signaling.ts) + the signaling server's ALLOWED_SIGNAL_KINDS (mini-services/signaling-server/index.ts).
+  * runReceiverRelay now accepts (signaling, sessionId) and sends "relay-complete" to the sender after it finishes downloading + decrypting every file.
+  * runSenderRelay now accepts a `waitForAck` callback: after sending relay-meta, it sets `finishing: true`, `await waitForAck()`, then sets phase="done". So the sender stays in "finishing" while the receiver downloads, and only shows "All delivered" once the receiver confirms.
+  * Added resolveRelayAck + waitForRelayAck helpers (relayAckResolverRef + relayAckTimerRef) in the hook. The sender's onSignal handlers (both beginSending + sendToNearby) now check `data.kind === "relay-complete"` → resolveRelayAck(true). 20s fallback so the sender shows done anyway if the receiver closed early + the ack is lost.
+  * Moved the ack helpers ABOVE beginSending in the hook body (ESLint flagged "accessed before declared").
+  * Updated all 4 runSenderRelay call sites (both onPeerJoined relay branches + both auto-pivot branches) to pass waitForRelayAck, and both runReceiverRelay call sites (QR + lobby-invite) to pass (signaling, sessionId).
+  * Verified: relay transfer of red.png → sender showed "All delivered" only after the receiver reached "All yours" (the ack flowed). Both showed done simultaneously instead of the sender finishing first.
+
+- `bun run lint`: 0 errors (after moving the ack helpers above beginSending to satisfy the "accessed before declared" rule).
+
+Stage Summary:
+- #1 fixed: the sender no longer shows "All delivered" while the receiver is still downloading. It now waits for the receiver's "relay-complete" ack (over the signaling socket) before declaring done, with a 20s fallback. So "All delivered" only appears once the receiver actually has the files.
+- #2 fixed: pressing Done + adding a new file no longer flips the toggle to Auto. The reset preserves the user's chosen transferMode (verified: stays on Relay, localStorage "relay", next QR carries the key fragment).
+- #3 fixed: this was a symptom of #2. Now that the mode persists across reset, relay stays relay (it no longer silently becomes Auto after Done).
+- Files changed: src/hooks/use-beam-session.ts (reset preserves mode + relay ack wiring + ack helpers + cleanup), src/lib/signaling.ts (relay-complete kind), mini-services/signaling-server/index.ts (whitelist).
+
+---
+Task ID: 23
+Agent: main (Z.ai Code)
+Task: Fix nearby-sends using P2P in relay mode + remove the "Files that go straight from you to them" hero bubble.
+
+Work Log:
+- ROOT CAUSE of nearby relay failure: the signaling server's `invite` handler (mini-services/signaling-server/index.ts) was STRIPPING the `keyB64` field from the invite payload. It read `to, sessionId, device, files` from the incoming payload but NOT `keyB64`, + the `emitTo(to, "invite", {...})` didn't include it. So when the sender (relay mode) used "send to someone nearby", sendToNearby generated the AES key + passed it to lobby.invite, but the server dropped it. The receiver's onInvite never got the key → keyRef.current stayed null → when relay-meta arrived, the receiver's `if (!keyB64)` branch fired ("Decryption key missing") → the receiver couldn't decrypt → the download never happened → the sender's 20s ack-fallback eventually fired → "All delivered" prematurely. The user saw a broken nearby flow + reasonably concluded it was "using peer-to-peer".
+- FIXED: added `const keyB64 = payload?.keyB64;` to the invite handler + `keyB64` to the `emitTo(to, "invite", { sessionId, from, device, files, keyB64 })` payload. Now the key travels with the invite (over WSS, on the user's own signaling server), the receiver stores it in keyRef, + relay-meta decryption works.
+- Removed the brief "Connecting…" flicker for relay mode: both onPeerJoined handlers (beginSending + sendToNearby) now check the mode FIRST + go straight to "transferring" for relay (no "connecting" patch that flashed for a frame + made it look like P2P was negotiating).
+- Added a clear "Relay" badge (Globe icon, brand-blue) + "Sending via encrypted server relay" subtext in the sender's transferring phase when transferMode === "relay", replacing the P2P CandidateBadge. So the user can SEE it's using relay, not peer-to-peer.
+- Removed the "Files that go straight from you to them" hero bubble (the badge above the headline in beam-app.tsx) per the user's request.
+- Verified end-to-end (two isolated browser sessions, pre-warmed dev server + relay route so no hot-reload interference):
+  * Sender in relay mode, file selected, tapped the nearby receiver ("Linux desktop · Chrome Send").
+  * Sender went STRAIGHT to "finishing" (no "connecting" flicker), then "All delivered".
+  * Receiver reached "All yours" + "All files arrived, press Download to save" + showed the file.
+  * Both reached done SIMULTANEOUSLY at t+1 (the relay-complete ack flowed: sender waited for the receiver to confirm before showing "All delivered"). dev.log confirmed the full relay lifecycle: POST /api/relay (sender upload) + GET /api/relay (receiver download) + the relay-complete signal.
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- Nearby sends in relay mode now WORK. The bug was the signaling server stripping the `keyB64` from the invite payload, so the receiver never got the decryption key + relay-meta decryption failed. Now the key travels with the invite + the receiver decrypts + the relay-complete ack flows back, so the sender waits for the receiver (no premature "All delivered").
+- Removed the "Connecting…" flicker for relay mode (goes straight to transferring) so it no longer looks like P2P is negotiating.
+- Added a visible "Relay" badge + "Sending via encrypted server relay" subtext so the user can confirm relay is being used.
+- Removed the "Files that go straight from you to them" hero bubble.
+- Files changed: mini-services/signaling-server/index.ts (invite passes keyB64), src/hooks/use-beam-session.ts (onPeerJoined skips "connecting" for relay), src/components/beam/sender-panel.tsx (Relay badge + subtext + removed duplicate transferMode destructure), src/components/beam/beam-app.tsx (removed hero bubble), src/lib/relay.ts (removed diagnostic logs).

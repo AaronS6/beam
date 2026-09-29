@@ -75,7 +75,7 @@ const CLEANUP_INTERVAL_MS = 60 * 1000;
 // Only these `data.kind` values may be relayed. Anything else is dropped —
 // defense in depth so the server is never an arbitrary message bus (and can
 // never accidentally become a file-byte channel).
-const ALLOWED_SIGNAL_KINDS = new Set(["offer", "answer", "candidate", "relay-meta"]);
+const ALLOWED_SIGNAL_KINDS = new Set(["offer", "answer", "candidate", "relay-meta", "relay-complete"]);
 
 type DeviceInfo = {
   name?: string;
@@ -508,6 +508,12 @@ io.on("connection", (socket) => {
       const sessionId = String(payload?.sessionId ?? "").trim();
       const device = (payload?.device ?? {}) as DeviceInfo;
       const files = payload?.files;
+      // The sender's AES-GCM relay key (only present in relay/auto mode). MUST
+      // be passed through so the invitee can decrypt the relayed ciphertext.
+      // Previously this was stripped here, so the receiver's keyRef stayed null
+      // + relay-meta decryption failed with "key missing", breaking nearby
+      // sends in relay mode.
+      const keyB64 = payload?.keyB64;
       if (!to || !sessionId) {
         socket.emit("error", { message: "invite requires `to` and `sessionId`" });
         return;
@@ -525,6 +531,7 @@ io.on("connection", (socket) => {
         from: socket.id,
         device,
         files,
+        keyB64,
       });
     } catch (err) {
       console.error("[signaling] invite error", err);

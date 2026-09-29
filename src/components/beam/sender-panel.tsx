@@ -16,6 +16,7 @@ import {
   FilePlus2,
   Smartphone,
   AlertTriangle,
+  Globe,
 } from "lucide-react";
 import { BeamStage } from "./beam-stage";
 import { BeamQR } from "./beam-qr";
@@ -190,7 +191,9 @@ export function SenderPanel({
                 </p>
               ) : (
                 <p className="mt-1 text-center text-xs text-muted-foreground">
-                  {overall < 100 ? "Sending your files peer-to-peer" : "Wrapping up"}
+                  {transferMode === "relay"
+                    ? "Sending via encrypted server relay"
+                    : overall < 100 ? "Sending your files peer-to-peer" : "Wrapping up"}
                 </p>
               )}
               <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
@@ -198,7 +201,14 @@ export function SenderPanel({
                   <ShieldCheck className="h-3 w-3" strokeWidth={2} />
                   Encrypted
                 </div>
-                <CandidateBadge type={candidateType} />
+                {transferMode === "relay" ? (
+                  <div className="inline-flex items-center gap-1.5 rounded-full border border-primary/40 bg-primary/10 px-2.5 py-1 text-[11px] font-bold text-primary">
+                    <Globe className="h-3 w-3" strokeWidth={2} />
+                    Relay
+                  </div>
+                ) : (
+                  <CandidateBadge type={candidateType} />
+                )}
                 <QualityBars level={quality} />
               </div>
             </div>

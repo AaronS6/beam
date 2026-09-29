@@ -105,7 +105,7 @@ const INITIAL: SessionState = {
   peakSpeed: 0,
   candidateType: null,
   finishing: false,
-  transferMode: "auto",
+  transferMode: "relay",
   nearby: [],
 };
 
@@ -150,6 +150,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const phaseRef = useRef<Phase>(state.phase);
   const keyRef = useRef<string | null>(null);
   const relayFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Relay-path ack: the sender waits for the receiver's "relay-complete"
+  // signal before showing "All delivered" (otherwise it'd say done while the
+  // receiver is still downloading). Same pattern as the P2P "all-received"
+  // ack, but over the signaling socket (relay has no WebRTC channel).
+  const relayAckResolverRef = useRef<((ok: boolean) => void) | null>(null);
+  const relayAckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => { transferModeRef.current = state.transferMode; }, [state.transferMode]);
   useEffect(() => { phaseRef.current = state.phase; }, [state.phase]);
   // Receiver: read the decryption key from the URL fragment on mount.
@@ -162,6 +168,31 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const patch = useCallback((p: Partial<SessionState>) => {
     setState((s) => ({ ...s, ...p }));
   }, []);
+
+  // ---- Relay-path ack (declared early so beginSending/sendToNearby can
+  // reference it). The sender waits for the receiver's "relay-complete"
+  // signal before showing "All delivered", so the sender doesn't say done
+  // while the receiver is still downloading. Mirrors the P2P all-received
+  // ack but over the signaling socket. ----
+  const resolveRelayAck = useCallback((ok: boolean) => {
+    if (relayAckResolverRef.current) {
+      const r = relayAckResolverRef.current;
+      relayAckResolverRef.current = null;
+      r(ok);
+    }
+    if (relayAckTimerRef.current) {
+      clearTimeout(relayAckTimerRef.current);
+      relayAckTimerRef.current = null;
+    }
+  }, []);
+  const waitForRelayAck = useCallback((): Promise<boolean> => {
+    return new Promise<boolean>((resolve) => {
+      relayAckResolverRef.current = resolve;
+      // 20s fallback: if the receiver never acks (closed early, flaky
+      // socket), show done anyway so the sender doesn't hang forever.
+      relayAckTimerRef.current = setTimeout(() => resolveRelayAck(false), 20000);
+    });
+  }, [resolveRelayAck]);
 
   /** Schedule a peer-left error after PEER_LEFT_GRACE_MS. If a peer-joined /
    *  session-joined / re-join event arrives before the timer fires, cancel it
@@ -296,7 +327,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
             patch({ phase: "error", error: "Decryption key missing from the URL, ask the sender to invite you again." });
             return;
           }
-          void runReceiverRelay(sigdata.payload.files, keyB64, patch, setState);
+          void runReceiverRelay(sigdata.payload.files, keyB64, sessionSignaling, sid, patch, setState);
           return;
         }
         let transfer = transferRef.current;
@@ -396,7 +427,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
           patch({ phase: "error", error: "This transfer was sent via the encrypted relay, but the decryption key is missing from the URL. Ask the sender to share the QR link again." });
           return;
         }
-        void runReceiverRelay(sigdata.payload.files, keyB64, patch, setState);
+        void runReceiverRelay(sigdata.payload.files, keyB64, signaling, sessionIdParam, patch, setState);
         return;
       }
       // P2P path: WebRTC offer/answer/candidate.
@@ -494,23 +525,31 @@ export function useBeamSession(sessionIdParam?: string | null) {
         // Peer came back (or joined fresh), cancel any pending peer-left
         // error that was queued during a brief signaling disconnect.
         cancelPeerLeftError();
-        patch({
-          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
-          // Transition to "connecting" so the sender UI shows "Connecting…"
-          // instead of the QR code while ICE is negotiating. Previously the
-          // sender stayed in "waiting" (showing the QR) for the entire 5-30s
-          // ICE negotiation, which looked like the connection wasn't taking.
-          phase: "connecting",
-        });
         const m = transferModeRef.current;
         const keyB64 = keyRef.current;
-        // RELAY mode: skip WebRTC entirely, go straight to the encrypted
-        // server relay. The user explicitly chose "Different networks".
+        // RELAY mode: skip WebRTC entirely + go STRAIGHT to transferring.
+        // No "connecting" flicker (the relay path is server-mediated, not
+        // ICE, so there's nothing to negotiate). Previously this patched
+        // "connecting" first, which flashed "Connecting…" for a frame +
+        // made the user think it was using peer-to-peer.
         if (m === "relay" && keyB64) {
-          patch({ phase: "transferring", transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, error: null, finishing: false });
-          void runSenderRelay(sid, signaling, rawFilesRef.current, keyB64, patch, setState);
+          patch({
+            peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+            phase: "transferring",
+            transferStartedAt: Date.now(),
+            transferEndedAt: null,
+            peakSpeed: 0,
+            error: null,
+            finishing: false,
+          });
+          void runSenderRelay(sid, signaling, rawFilesRef.current, keyB64, patch, setState, waitForRelayAck);
           return;
         }
+        // P2P or AUTO: show "Connecting…" while ICE negotiates.
+        patch({
+          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+          phase: "connecting",
+        });
         // P2P or AUTO: set up WebRTC.
         const transfer = makeTransfer("sender", sid, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
@@ -526,7 +565,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
             try { transfer.close(); } catch { /* ignore */ }
             transferRef.current = null;
             patch({ phase: "transferring", error: null, transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, finishing: false });
-            void runSenderRelay(sid, signaling, rawFilesRef.current, keyB64, patch, setState);
+            void runSenderRelay(sid, signaling, rawFilesRef.current, keyB64, patch, setState, waitForRelayAck);
           };
           // Override the P2P onFailed (which would normally error) → pivot.
           transfer.onFailed = () => pivotToRelay();
@@ -542,6 +581,15 @@ export function useBeamSession(sessionIdParam?: string | null) {
       signaling.onSignal = (data) => {
         // Any signal from the peer means they're alive, cancel pending errors.
         cancelPeerLeftError();
+        // Relay-path ack: the receiver finished downloading + decrypting.
+        // Resolve the sender's waitForRelayAck so it can show "All delivered"
+        // only once the receiver actually has the files (was previously
+        // premature, the sender said done while the receiver was still
+        // downloading).
+        if (data.kind === "relay-complete") {
+          resolveRelayAck(true);
+          return;
+        }
         transferRef.current?.handleSignal(data);
       };
       signaling.onPeerLeft = () => {
@@ -646,19 +694,28 @@ export function useBeamSession(sessionIdParam?: string | null) {
       };
       signaling.onPeerJoined = ({ receiver }) => {
         cancelPeerLeftError();
-        patch({
-          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
-          // Transition to "connecting", see QR-path comment above.
-          phase: "connecting",
-        });
         const m = transferModeRef.current;
         const keyB64 = keyRef.current;
-        // RELAY mode: skip WebRTC, run the encrypted relay (same as the QR path).
+        // RELAY mode: skip WebRTC, go straight to transferring (no
+        // "connecting" flicker, same as the QR path).
         if (m === "relay" && keyB64) {
-          patch({ phase: "transferring", transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, error: null, finishing: false });
-          void runSenderRelay(sessionId, signaling, rawFilesRef.current, keyB64, patch, setState);
+          patch({
+            peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+            phase: "transferring",
+            transferStartedAt: Date.now(),
+            transferEndedAt: null,
+            peakSpeed: 0,
+            error: null,
+            finishing: false,
+          });
+          void runSenderRelay(sessionId, signaling, rawFilesRef.current, keyB64, patch, setState, waitForRelayAck);
           return;
         }
+        // P2P or AUTO: show "Connecting…" while ICE negotiates.
+        patch({
+          peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
+          phase: "connecting",
+        });
         // P2P or AUTO: set up WebRTC.
         const transfer = makeTransfer("sender", sessionId, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
@@ -671,7 +728,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
             try { transfer.close(); } catch { /* ignore */ }
             transferRef.current = null;
             patch({ phase: "transferring", error: null, transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, finishing: false });
-            void runSenderRelay(sessionId, signaling, rawFilesRef.current, keyB64, patch, setState);
+            void runSenderRelay(sessionId, signaling, rawFilesRef.current, keyB64, patch, setState, waitForRelayAck);
           };
           transfer.onFailed = () => pivotToRelay();
           relayFallbackTimerRef.current = setTimeout(() => {
@@ -683,6 +740,15 @@ export function useBeamSession(sessionIdParam?: string | null) {
       };
       signaling.onSignal = (data) => {
         cancelPeerLeftError();
+        // Relay-path ack: the receiver finished downloading + decrypting.
+        // Resolve the sender's waitForRelayAck so it can show "All delivered"
+        // only once the receiver actually has the files (was previously
+        // premature, the sender said done while the receiver was still
+        // downloading).
+        if (data.kind === "relay-complete") {
+          resolveRelayAck(true);
+          return;
+        }
         transferRef.current?.handleSignal(data);
       };
       signaling.onPeerLeft = () => {
@@ -773,6 +839,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
       clearTimeout(peerLeftTimerRef.current);
       peerLeftTimerRef.current = null;
     }
+    if (relayFallbackTimerRef.current) {
+      clearTimeout(relayFallbackTimerRef.current);
+      relayFallbackTimerRef.current = null;
+    }
+    // Settle any pending relay-ack wait so it doesn't hang across a reset.
+    resolveRelayAck(false);
     transferRef.current?.releaseAll();
     transferRef.current?.close();
     transferRef.current = null;
@@ -792,7 +864,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
     sessionIdRef.current = mode === "receiver" ? sessionIdParam ?? null : null;
     speedRef.current = { lastTs: 0, lastBytes: 0, ema: 0 };
     reconnectPrevPhase.current = null;
-    patch({ ...INITIAL, mode, sessionId: mode === "receiver" ? sessionIdParam ?? null : null });
+    // CRITICAL FIX: preserve the user's chosen transferMode across reset.
+    // Previously reset used `...INITIAL` which hardcoded transferMode: "auto",
+    // so pressing Done + adding a new file flipped Relay back to Auto — and
+    // then the next transfer used Auto (P2P first) instead of Relay, which
+    // is why "relay sometimes felt like auto". Now we keep the persisted choice.
+    patch({ ...INITIAL, mode, sessionId: mode === "receiver" ? sessionIdParam ?? null : null, transferMode: transferModeRef.current });
   }, [mode, patch, sessionIdParam]);
 
   const cancel = useCallback(() => {
@@ -1175,6 +1252,7 @@ async function runSenderRelay(
   keyB64: string,
   patch: (p: Partial<SessionState>) => void,
   setState: React.Dispatch<React.SetStateAction<SessionState>>,
+  waitForAck: () => Promise<boolean>,
 ) {
   try {
     const key = await importTransferKey(keyB64);
@@ -1219,11 +1297,17 @@ async function runSenderRelay(
       }
     }
     // Send the share manifest to the receiver via the signaling server. The
-    // server relays only this tiny JSON (share IDs + original metadata) —
+    // server relays only this tiny JSON (share IDs + original metadata),
     // never file bytes. The receiver uses the IDs to GET the ciphertext from
     // /api/relay and decrypts locally with the key from the URL fragment.
     signaling.sendSignal(sessionId, { kind: "relay-meta", payload: { files: shares } });
-    // Mark done on the sender.
+    // Flip to "finishing" while we wait for the receiver to confirm it
+    // downloaded + decrypted everything. Previously the sender showed "All
+    // delivered" the instant relay-meta was sent, which was premature, the
+    // receiver was still downloading. Now we wait for the "relay-complete"
+    // ack (with a 20s fallback) before declaring done.
+    patch({ finishing: true });
+    await waitForAck();
     setState((s) => ({ ...s, phase: "done", transferEndedAt: Date.now(), speed: 0, finishing: false }));
   } catch (e) {
     patch({ phase: "error", error: `Relay upload failed: ${String(e)}` });
@@ -1232,10 +1316,15 @@ async function runSenderRelay(
 
 /** Receiver relay: fetch + decrypt each share, fire onFileComplete-equivalent
  *  state updates (reusing the same FileItem shape so the UI is identical to
- *  the P2P path). One-time-use: DELETE each share after a successful decrypt. */
+ *  the P2P path). One-time-use: DELETE each share after a successful decrypt.
+ *  Sends a `relay-complete` signal to the sender when done so it knows the
+ *  receiver actually has every file (otherwise the sender would show "All
+ *  delivered" while the receiver is still downloading). */
 async function runReceiverRelay(
   shares: RelayShare[],
   keyB64: string,
+  signaling: SignalingClient,
+  sessionId: string,
   patch: (p: Partial<SessionState>) => void,
   setState: React.Dispatch<React.SetStateAction<SessionState>>,
 ) {
@@ -1302,6 +1391,13 @@ async function runReceiverRelay(
       }
     }
     setState((s) => ({ ...s, phase: "done", transferEndedAt: Date.now(), speed: 0 }));
+    // Tell the sender the receiver has every file. Without this the sender
+    // would show "All delivered" the moment it sent relay-meta, while the
+    // receiver was still downloading. (Best-effort, the sender has a 20s
+    // fallback if this is lost.)
+    try {
+      signaling.sendSignal(sessionId, { kind: "relay-complete", payload: {} });
+    } catch { /* best-effort */ }
   } catch (e) {
     patch({ phase: "error", error: `Relay download failed: ${String(e)}` });
   }
