@@ -27,7 +27,9 @@ import { CandidateBadge } from "./candidate-badge";
 import { QualityBars } from "./quality-bars";
 import { TransferSummary } from "./transfer-summary";
 import { NearbyDevices } from "./nearby-devices";
+import { TransferModeToggle } from "./transfer-mode-toggle";
 import { formatBytes, formatSpeed, formatEta } from "@/lib/format";
+import { modeShortDescription, type TransferMode } from "@/lib/transfer-mode";
 import type { SessionState } from "@/hooks/use-beam-session";
 
 export function SenderPanel({
@@ -41,6 +43,8 @@ export function SenderPanel({
   onReorderFiles,
   onPasteText,
   onPickNearby,
+  transferMode,
+  onTransferModeChange,
 }: {
   state: SessionState;
   onFiles: (files: File[]) => void;
@@ -52,6 +56,8 @@ export function SenderPanel({
   onReorderFiles: (fromId: string, toId: string) => void;
   onPasteText: (text: string) => void;
   onPickNearby: (socketId: string, label: string) => void;
+  transferMode: TransferMode;
+  onTransferModeChange: (m: TransferMode) => void;
 }) {
   const {
     phase, qrUrl, files, totalBytes, receivedBytes, speed, peerDevice,
@@ -98,6 +104,16 @@ export function SenderPanel({
               onFiles={onFiles}
               onPasteText={onPasteText}
             />
+            {/* Transfer-mode toggle, persisted in localStorage so it sticks
+                across sessions. Helps the user tell Beam whether both phones
+                share a network (direct P2P) or are on different networks
+                (encrypted relay) so cross-network transfers actually work. */}
+            <div className="mt-3 flex w-full flex-col items-center gap-1.5 px-5 pb-5">
+              <TransferModeToggle value={transferMode} onChange={onTransferModeChange} />
+              <p className="text-center text-[11px] leading-tight text-muted-foreground">
+                {modeShortDescription(transferMode)}
+              </p>
+            </div>
           </BeamStage>
         )}
 
@@ -105,20 +121,27 @@ export function SenderPanel({
           <BeamStage active={phase === "waiting"}>
             <div key="waiting" className="animate-beam-pop flex flex-col items-center px-7 py-8">
               {/* "Ready" badge above the QR */}
-              <div className="animate-beam-scale mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-secondary/60 px-3 py-1.5 text-xs font-bold text-foreground">
-                <span className="h-2 w-2 animate-beam-breathe rounded-full bg-primary" />
+              <div className="edge-light animate-beam-scale mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-secondary/80 px-3 py-1.5 text-xs font-bold text-foreground backdrop-blur-sm">
+                <span className="h-2 w-2 animate-beam-breathe rounded-full bg-primary shadow-[0_0_8px_var(--brand)]" />
                 Ready to scan
               </div>
-              {/* QR code with a subtle blue glow ring */}
+              {/* QR code with a layered blue glow ring */}
               <div className="relative">
+                {/* Outer halo, a wider, softer pool of light around the QR */}
                 <div
                   aria-hidden
-                  className="pointer-events-none absolute -inset-3 rounded-[28px] opacity-30 blur-xl"
+                  className="pointer-events-none absolute -inset-5 -z-10 rounded-[32px] opacity-50 blur-2xl"
                   style={{ background: "radial-gradient(circle, var(--brand) 0%, transparent 70%)" }}
+                />
+                {/* Inner ring glow, the sharp, focused halo */}
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -inset-2 rounded-[24px] opacity-40 blur-md"
+                  style={{ background: "radial-gradient(circle, var(--brand-haze) 0%, transparent 70%)" }}
                 />
                 <BeamQR value={qrUrl} size={232} className="relative" />
               </div>
-              <p className="font-display mt-5 text-center text-[17px] font-bold text-foreground">
+              <p className="font-display mt-5 text-center text-[17px] font-bold tracking-[-0.01em] text-foreground">
                 Point a phone camera here
               </p>
               <p className="mt-1.5 max-w-[28ch] text-center text-sm leading-relaxed text-muted-foreground">
@@ -163,7 +186,7 @@ export function SenderPanel({
               </p>
               {finishing ? (
                 <p className="mt-1 max-w-[30ch] text-center text-xs leading-relaxed text-muted-foreground">
-                  Almost done — the other device is saving your files. Keep this app open.
+                  Almost done, the other device is saving your files. Keep this app open.
                 </p>
               ) : (
                 <p className="mt-1 text-center text-xs text-muted-foreground">
@@ -191,7 +214,7 @@ export function SenderPanel({
               </div>
               <p className="font-display mt-5 text-[22px] font-bold text-foreground">Reconnecting…</p>
               <p className="mt-1 text-center text-sm text-muted-foreground">
-                The connection dipped. Hang on — it usually comes back.
+                The connection dipped. Hang on, it usually comes back.
               </p>
             </div>
           </BeamStage>
@@ -200,12 +223,25 @@ export function SenderPanel({
         {phase === "done" && (
           <BeamStage>
             <div key="done" className="flex flex-col items-center px-6 py-10">
-              <div className="animate-beam-bounce flex h-20 w-20 items-center justify-center rounded-full bg-primary">
-                <svg width="40" height="40" viewBox="0 0 48 48" fill="none">
-                  <path d="M12 24.5 L20.5 33 L36 16" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="animate-beam-check" />
-                </svg>
+              {/* Success check + a single bloom halo that plays once on entry */}
+              <div className="relative flex h-20 w-20 items-center justify-center">
+                <div
+                  aria-hidden
+                  className="animate-beam-bloom absolute inset-0 rounded-full"
+                  style={{ border: "2px solid var(--brand)" }}
+                />
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute -inset-4 -z-10 rounded-full opacity-50 blur-xl"
+                  style={{ background: "radial-gradient(circle, var(--brand) 0%, transparent 70%)" }}
+                />
+                <div className="edge-light flex h-20 w-20 items-center justify-center rounded-full bg-primary shadow-[0_8px_32px_-6px_var(--brand)]">
+                  <svg width="40" height="40" viewBox="0 0 48 48" fill="none">
+                    <path d="M12 24.5 L20.5 33 L36 16" stroke="white" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" className="animate-beam-check" />
+                  </svg>
+                </div>
               </div>
-              <p className="font-display mt-5 text-[24px] font-bold text-foreground">All delivered</p>
+              <p className="font-display mt-5 text-[24px] font-bold tracking-[-0.02em] text-foreground">All delivered</p>
               <p className="mt-1 text-sm text-muted-foreground">
                 {files.length} {files.length === 1 ? "file" : "files"} · {formatBytes(totalBytes)}
               </p>
@@ -350,7 +386,7 @@ export function SenderPanel({
           </div>
         )}
 
-        {/* Nearby devices — tap one to send directly (no QR needed).
+        {/* Nearby devices, tap one to send directly (no QR needed).
             Shows whenever another device is on the Beam site, even before
             you've picked files (idle). Only hidden in store mode. */}
         {(phase === "idle" || phase === "waiting" || phase === "connected") && (
@@ -382,7 +418,7 @@ export function SenderPanel({
               <button
                 type="button"
                 onClick={onReset}
-                className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground transition-transform active:scale-[0.97] hover:opacity-90"
+                className="edge-light inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-semibold text-primary-foreground shadow-[0_4px_16px_-4px_var(--brand)] transition-all duration-200 active:scale-[0.97] hover:scale-[1.03] hover:brightness-110"
               >
                 <Plus className="h-4 w-4" strokeWidth={2} /> Send more files
               </button>

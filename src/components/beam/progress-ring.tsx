@@ -3,7 +3,7 @@
 import * as React from "react";
 
 /**
- * ProgressRing — a circular progress indicator with the beam gradient stroke.
+ * ProgressRing, a circular progress indicator with the beam gradient stroke.
  * Used in the stage during transfer.
  */
 export function ProgressRing({
@@ -28,9 +28,16 @@ export function ProgressRing({
       <svg width={size} height={size} className="-rotate-90">
         <defs>
           <linearGradient id={gid} x1="0%" y1="0%" x2="100%" y2="100%">
-            <stop offset="0%" stopColor="#0A84FF" />
-            <stop offset="100%" stopColor="#7B61FF" />
+            <stop offset="0%" stopColor="#7AB8F0" />
+            <stop offset="100%" stopColor="#9CCAF6" />
           </linearGradient>
+          <filter id={`${gid}-glow`} x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="2.5" result="b" />
+            <feMerge>
+              <feMergeNode in="b" />
+              <feMergeNode in="SourceGraphic" />
+            </feMerge>
+          </filter>
         </defs>
         <circle
           cx={size / 2}
@@ -50,7 +57,8 @@ export function ProgressRing({
           strokeLinecap="round"
           strokeDasharray={c}
           strokeDashoffset={offset}
-          style={{ transition: "stroke-dashoffset 0.25s cubic-bezier(0.22,1,0.36,1)" }}
+          filter={`url(#${gid}-glow)`}
+          style={{ transition: "stroke-dashoffset 0.4s cubic-bezier(0.22,1,0.36,1)" }}
         />
       </svg>
       <div className="absolute inset-0 flex flex-col items-center justify-center">{children}</div>

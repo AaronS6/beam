@@ -18,7 +18,7 @@ import { Confetti } from "./confetti";
 
 function fileKind(name: string): string {
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  if (["png", "jpg", "jpeg", "gif", "webp", "heic", "svg"].includes(ext)) return "Image";
+  if (["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "svg"].includes(ext)) return "Image";
   if (["mp4", "mov", "avi", "mkv", "webm"].includes(ext)) return "Video";
   if (["mp3", "wav", "flac", "aac", "m4a"].includes(ext)) return "Audio";
   if (["pdf"].includes(ext)) return "PDF";
@@ -58,6 +58,15 @@ export function FileRow({
   const [confetti, setConfetti] = React.useState(false);
   const hasText = done && !!file.text;
   const hasImage = !!file.imageUrl;
+  // Some image formats (notably HEIC/HEIF on Chrome / Firefox) can be picked
+  // + transferred correctly but the browser can't DECODE them inline, an <img>
+  // with a blob URL for such a file fires onError and would otherwise show a
+  // broken-image glyph. We track that and fall back to the file-icon chip so
+  // the row still looks clean; the Download button still works (the bytes are
+  // intact, the user just opens them in a native app).
+  const [imgBroken, setImgBroken] = React.useState(false);
+  React.useEffect(() => { setImgBroken(false); }, [file.imageUrl]);
+  const showImage = hasImage && !imgBroken;
 
   const handleCopy = () => {
     if (!file.text || !onCopyText) return;
@@ -89,14 +98,15 @@ export function FileRow({
     >
       <Confetti trigger={confetti} />
       <div className="flex items-center gap-3">
-        {/* Type chip — or image thumbnail for received images */}
-        {hasImage ? (
+        {/* Type chip, or image thumbnail for received images */}
+        {showImage ? (
           <div className="h-11 w-11 shrink-0 overflow-hidden rounded-xl bg-secondary">
             <img
               src={file.imageUrl}
               alt={file.name}
               className="h-full w-full object-cover"
               loading="lazy"
+              onError={() => setImgBroken(true)}
             />
           </div>
         ) : (
@@ -120,11 +130,22 @@ export function FileRow({
           <div className="mt-2 flex items-center gap-2">
             <div className="relative h-1.5 flex-1 overflow-hidden rounded-full bg-secondary">
               <div
-                className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-200 ease-out ${
+                className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ease-out ${
                   done ? "bg-foreground/80" : "bg-beam"
                 }`}
                 style={{ width: `${pct}%` }}
               />
+              {/* Shimmer overlay while transferring, gives the bar a sense
+                  of motion even when the percent is momentarily steady. */}
+              {!done && file.status === "transferring" && pct > 0 && pct < 100 && (
+                <div
+                  className="animate-beam-shimmer absolute inset-y-0 left-0 w-1/3 rounded-full opacity-60"
+                  style={{
+                    background:
+                      "linear-gradient(90deg, transparent, color-mix(in srgb, #FFFFFF 45%, transparent), transparent)",
+                  }}
+                />
+              )}
             </div>
             <span className="w-9 shrink-0 text-right text-xs tabular-nums text-muted-foreground">
               {done ? "100" : pct}%
@@ -132,7 +153,7 @@ export function FileRow({
           </div>
           <div className="mt-1.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
             <span>{fileKind(file.name)}</span>
-            {/* Spinner ONLY while transferring — stops when done */}
+            {/* Spinner ONLY while transferring, stops when done */}
             {file.status === "transferring" && (
               <>
                 <span>·</span>
@@ -157,7 +178,7 @@ export function FileRow({
           </div>
         </div>
 
-        {/* Action — DOWNLOAD is the primary button (replaces Save) */}
+        {/* Action, DOWNLOAD is the primary button (replaces Save) */}
         <div className="flex shrink-0 items-center gap-1.5">
           {hasText && (
             <button
@@ -178,7 +199,7 @@ export function FileRow({
             <button
               type="button"
               onClick={handleDownload}
-              className="inline-flex items-center gap-1.5 rounded-full bg-beam px-4 py-2 text-xs font-bold text-white transition-all duration-200 active:scale-[0.97] hover:scale-[1.05]"
+              className="edge-light inline-flex items-center gap-1.5 rounded-full bg-beam px-4 py-2 text-xs font-bold text-white shadow-[0_4px_16px_-4px_var(--brand)] transition-all duration-200 active:scale-[0.97] hover:scale-[1.05] hover:brightness-110"
             >
               {downloaded ? (
                 <Check className="h-3.5 w-3.5" strokeWidth={2.5} />
@@ -227,7 +248,7 @@ export function FileRow({
       )}
 
       {/* Image preview (expandable) */}
-      {hasImage && done && (
+      {showImage && done && (
         <div className="mt-3 border-t border-border/70 pt-3">
           <button
             type="button"

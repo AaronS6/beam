@@ -3,7 +3,7 @@
 import * as React from "react";
 
 /**
- * QualityBars — a 4-bar signal-strength indicator driven by the WebRTC stats
+ * QualityBars, a 4-bar signal-strength indicator driven by the WebRTC stats
  * poll (RTT → 0..4 level). Quiet, informational. Hidden (0 bars) when no
  * connection is active.
  */

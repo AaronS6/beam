@@ -6,7 +6,7 @@ import { formatBytes, formatSpeed, formatDuration } from "@/lib/format";
 import type { SessionState } from "@/hooks/use-beam-session";
 
 /**
- * TransferSummary — a calm stats grid shown on the complete screen
+ * TransferSummary, a calm stats grid shown on the complete screen
  * (files / size / time / peak speed). Restraint over flash.
  */
 export function TransferSummary({ state }: { state: SessionState }) {

@@ -4,9 +4,9 @@
 @custom-variant dark (&:is(.dark *));
 
 /* ============================================================
-   Beam — WeTransfer-style warm redesign
-   ONE confident background color (warm coral), ONE floating white
-   card, ONE accent. Friendly, human, confident — not corporate.
+   Beam — dark, glassy, atmospheric.
+   One deep charcoal-blue background, one floating dark card,
+   one soft light-blue accent. Premium, calm, confident.
    ============================================================ */
 
 @theme inline {
@@ -50,7 +50,6 @@
 }
 
 :root {
-  /* System font — friendly, humanist. */
   /* Fonts loaded via <link> in layout.tsx (Google Fonts CDN). */
   --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
   --font-display: "Bricolage Grotesque", "Inter", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
@@ -64,6 +63,7 @@
   --brand: #7AB8F0;            /* soft muted light blue — the accent */
   --brand-soft: #1A2230;       /* deep blue-tinted dark for decoration */
   --brand-deep: #9CCAF6;       /* lighter blue for hover states */
+  --brand-haze: #B8DCF8;      /* palest blue for halos + highlights */
 
   --background: #131722;       /* deep charcoal-blue (cool, not warm) */
   --foreground: #EEF2F8;       /* cool off-white text */
@@ -100,6 +100,8 @@
 
   /* The brand gradient — soft blue → lighter blue, used for QR glow + progress */
   --beam-gradient: linear-gradient(135deg, #7AB8F0 0%, #9CCAF6 100%);
+  /* A wider, more luminous gradient for shimmer text + hero glow */
+  --beam-gradient-wide: linear-gradient(90deg, #7AB8F0 0%, #9CCAF6 25%, #B8DCF8 50%, #9CCAF6 75%, #7AB8F0 100%);
 }
 
 @layer base {
@@ -141,25 +143,55 @@
     background-clip: text;
     color: transparent;
   }
-  /* The floating-card shadow — soft, warm, gives real depth */
+  /* The floating-card shadow — layered, with a cool blue ambient base so the
+     card genuinely feels like it's lifting off the dark background. The
+     inner-ring top highlight is applied on the BeamStage itself. */
   .shadow-float {
     box-shadow:
-      0 1px 2px rgba(42, 23, 18, 0.06),
-      0 12px 32px rgba(42, 23, 18, 0.12),
-      0 32px 64px -16px rgba(42, 23, 18, 0.16);
-  }
-  .dark .shadow-float {
-    box-shadow:
       0 1px 2px rgba(0, 0, 0, 0.4),
-      0 12px 32px rgba(0, 0, 0, 0.45),
-      0 32px 64px -16px rgba(0, 0, 0, 0.55);
+      0 8px 24px -6px rgba(0, 0, 0, 0.55),
+      0 24px 56px -12px rgba(0, 0, 0, 0.65),
+      0 0 0 1px rgba(255, 255, 255, 0.02);
   }
-  /* QR / active glow — coral halo */
+  /* A stronger, more atmospheric variant — used by the BeamStage so the
+     surrounding blue halo reads as light, not as a border. */
+  .shadow-float-strong {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.45),
+      0 12px 32px -6px rgba(0, 0, 0, 0.6),
+      0 32px 72px -16px rgba(0, 0, 0, 0.7),
+      0 0 80px -8px color-mix(in srgb, var(--brand) 22%, transparent);
+  }
+  /* QR / active glow — soft blue halo */
   .beam-glow {
     box-shadow:
       0 0 0 1px color-mix(in srgb, var(--brand) 35%, transparent),
       0 0 48px 6px color-mix(in srgb, var(--brand) 35%, transparent),
-      0 0 96px 16px color-mix(in srgb, #9CCAF6 22%, transparent);
+      0 0 96px 16px color-mix(in srgb, var(--brand-haze) 22%, transparent);
+  }
+  /* A subtle top-edge light reflection on dark cards — gives the glass feel */
+  .edge-light {
+    position: relative;
+  }
+  .edge-light::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--brand-haze) 14%, transparent) 0%,
+      color-mix(in srgb, var(--brand-haze) 4%, transparent) 18%,
+      transparent 35%,
+      transparent 100%
+    );
+    -webkit-mask:
+      linear-gradient(#000 0 0) content-box,
+      linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    pointer-events: none;
   }
 
   /* Custom scrollbar for long file lists */
@@ -172,10 +204,26 @@
   .scroll-beam::-webkit-scrollbar-thumb { background: var(--border); border-radius: 999px; }
   .scroll-beam::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
 
-  /* Subtle dotted texture for warmth (used on the coral background) */
+  /* Subtle dotted texture for warmth (used on the dark background) */
   .texture-dots {
     background-image: radial-gradient(color-mix(in srgb, #FFFFFF 10%, transparent) 1px, transparent 1px);
     background-size: 22px 22px;
+  }
+
+  /* Film-grain overlay — barely visible noise that breaks up flat dark
+     surfaces and reads as "premium camera grain" rather than "blurry blob". */
+  .texture-grain {
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  /* Soft glow under the floating card — a diffuse blue ambient pool that
+     makes the card feel like it's floating in a lit space. */
+  .ambient-glow {
+    background:
+      radial-gradient(ellipse 70% 60% at 50% 30%,
+        color-mix(in srgb, var(--brand) 28%, transparent) 0%,
+        color-mix(in srgb, var(--brand) 8%, transparent) 40%,
+        transparent 70%);
   }
 }
 
@@ -185,20 +233,20 @@
 
 /* AirDrop-style radar pulse around the QR frame while waiting */
 @keyframes beam-pulse {
-  0% { transform: scale(1); opacity: 0.5; }
-  70% { transform: scale(1.35); opacity: 0; }
-  100% { transform: scale(1.35); opacity: 0; }
+  0% { transform: scale(1); opacity: 0.55; }
+  70% { transform: scale(1.32); opacity: 0; }
+  100% { transform: scale(1.32); opacity: 0; }
 }
-.animate-beam-pulse { animation: beam-pulse 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+.animate-beam-pulse { animation: beam-pulse 3.2s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
 
 /* Slow rotating conic halo — the beam sweeping the QR frame */
 @keyframes beam-spin { to { transform: rotate(360deg); } }
-.animate-beam-spin { animation: beam-spin 7s linear infinite; }
+.animate-beam-spin { animation: beam-spin 9s linear infinite; }
 
 /* Breathing dot for the waiting status */
 @keyframes beam-breathe {
-  0%, 100% { opacity: 0.45; }
-  50% { opacity: 1; }
+  0%, 100% { opacity: 0.45; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.12); }
 }
 .animate-beam-breathe { animation: beam-breathe 2.4s ease-in-out infinite; }
 
@@ -210,7 +258,7 @@
 .animate-beam-check {
   stroke-dasharray: 48;
   stroke-dashoffset: 48;
-  animation: beam-check 0.5s 0.1s cubic-bezier(0.65, 0, 0.45, 1) forwards;
+  animation: beam-check 0.55s 0.15s cubic-bezier(0.65, 0, 0.45, 1) forwards;
 }
 
 /* Cross-fade + soft scale for state transitions */
@@ -223,16 +271,16 @@
 /* Floating decorative blobs drifting slowly behind the card */
 @keyframes beam-drift {
   0%, 100% { transform: translate(0, 0) scale(1); }
-  50% { transform: translate(12px, -8px) scale(1.05); }
+  50% { transform: translate(14px, -10px) scale(1.06); }
 }
-.animate-beam-drift { animation: beam-drift 12s ease-in-out infinite; }
+.animate-beam-drift { animation: beam-drift 16s ease-in-out infinite; }
 
 /* Progress shimmer when indeterminate */
 @keyframes beam-shimmer {
   0% { transform: translateX(-100%); }
   100% { transform: translateX(250%); }
 }
-.animate-beam-shimmer { animation: beam-shimmer 1.4s ease-in-out infinite; }
+.animate-beam-shimmer { animation: beam-shimmer 1.6s ease-in-out infinite; }
 
 /* ============================================================
    NEW v3 animations — more fun, more life
@@ -244,35 +292,57 @@
   60% { opacity: 1; transform: translateY(-6px) scale(1.02); }
   100% { opacity: 1; transform: translateY(0) scale(1); }
 }
-.animate-beam-pop { animation: beam-pop-in 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.animate-beam-pop { animation: beam-pop-in 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 
 /* Staggered fade-up for list items */
 @keyframes beam-fade-up {
   from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
-.animate-beam-up { animation: beam-fade-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) both; }
+.animate-beam-up { animation: beam-fade-up 0.45s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
-/* Animated gradient text shimmer — moves the coral gradient across the headline */
+/* Animated gradient text shimmer — moves the soft blue gradient across the
+   headline. Slower + wider stops than v2 so the shimmer feels calm, not
+   strobing. */
 @keyframes beam-gradient-move {
   0% { background-position: 0% 50%; }
   100% { background-position: 200% 50%; }
 }
 .text-beam-animate {
-  background-image: linear-gradient(90deg, #7AB8F0, #9CCAF6, #B8DCF8, #7AB8F0);
+  background-image: var(--beam-gradient-wide);
   background-size: 200% auto;
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: beam-gradient-move 6s linear infinite;
+  animation: beam-gradient-move 7s linear infinite;
 }
 
-/* Button glow pulse — subtle expanding ring on hover-able primary CTAs */
-@keyframes beam-glow-pulse {
-  0%, 100% { box-shadow: 0 8px 24px -6px color-mix(in srgb, var(--brand-deep) 50%, transparent); }
-  50% { box-shadow: 0 12px 36px -4px color-mix(in srgb, var(--brand-deep) 70%, transparent); }
+/* A soft glow on the headline accent word ("scan.") — a luminous halo that
+   reads as if the word is gently lit from behind. */
+.text-beam-glow {
+  filter:
+    drop-shadow(0 0 18px color-mix(in srgb, var(--brand) 38%, transparent))
+    drop-shadow(0 0 40px color-mix(in srgb, var(--brand-deep) 22%, transparent));
 }
-.animate-glow-pulse { animation: beam-glow-pulse 2.6s ease-in-out infinite; }
+
+/* Button glow pulse — slow, breathing ring on the primary CTA. Tuned to feel
+   inviting rather than attention-grabbing: a soft expanding + settling
+   halo rather than a sharp on/off. */
+@keyframes beam-glow-pulse {
+  0%, 100% {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 8px 24px -6px color-mix(in srgb, var(--brand-deep) 45%, transparent),
+      0 0 0 0 color-mix(in srgb, var(--brand) 0%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 1px 2px rgba(0, 0, 0, 0.4),
+      0 12px 36px -4px color-mix(in srgb, var(--brand-deep) 65%, transparent),
+      0 0 28px 2px color-mix(in srgb, var(--brand) 18%, transparent);
+  }
+}
+.animate-glow-pulse { animation: beam-glow-pulse 3.4s ease-in-out infinite; }
 
 /* Floating icon — gentle vertical bob */
 @keyframes beam-float {
@@ -307,7 +377,7 @@
   60% { opacity: 1; transform: scale(1.15) rotate(8deg); }
   100% { opacity: 1; transform: scale(1) rotate(0); }
 }
-.animate-beam-bounce { animation: beam-bounce-in 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.animate-beam-bounce { animation: beam-bounce-in 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
 
 /* Scale-in for small chips/badges */
 @keyframes beam-scale-in {
@@ -315,6 +385,15 @@
   to { opacity: 1; transform: scale(1); }
 }
 .animate-beam-scale { animation: beam-scale-in 0.3s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+/* The done-state halo — a single ring that blooms outward then settles.
+   Plays once on the success state to celebrate without being noisy. */
+@keyframes beam-bloom {
+  0% { transform: scale(0.6); opacity: 0; }
+  40% { opacity: 0.55; }
+  100% { transform: scale(1.6); opacity: 0; }
+}
+.animate-beam-bloom { animation: beam-bloom 1.2s cubic-bezier(0.22, 1, 0.36, 1) forwards; }
 
 /* Reduced motion — disable looping / decorative animation */
 @media (prefers-reduced-motion: reduce) {
@@ -332,6 +411,7 @@
    ============================================================ */
 @utility font-display {
   font-family: var(--font-display), var(--font-sans);
-  letter-spacing: -0.025em;
+  letter-spacing: -0.028em;
   font-feature-settings: "ss01";
 }
+

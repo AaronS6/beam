@@ -1,19 +1,19 @@
 "use client";
 
 /**
- * useBeamSession — orchestrates the signaling + WebRTC lifecycle (Path A) AND
+ * useBeamSession, orchestrates the signaling + WebRTC lifecycle (Path A) AND
  * the temporary-storage fallback (Path B), exposing a single state object.
  *
  * Path A (default): true peer-to-peer over parallel WebRTC DataChannels.
  *   Nothing is stored anywhere. QR/session expires after 5 min if no peer connects.
  * Path B (opt-in "Store temporarily"): files upload once to encrypted server
  *   storage; auto-delete within 5 min OR the instant the receiver finishes
- *   downloading — one-time-use. The backend enforces both ceilings; the client
+ *   downloading, one-time-use. The backend enforces both ceilings; the client
  *   countdown is just a courtesy.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SignalingClient } from "@/lib/signaling";
+import { SignalingClient, type RelayShare } from "@/lib/signaling";
 import {
   BeamTransfer,
   getIceServers,
@@ -21,6 +21,14 @@ import {
   type TransferState,
 } from "@/lib/webrtc";
 import { genSessionId, deviceInfo, detectDevice, type DeviceDescriptor } from "@/lib/format";
+import { generateTransferKey, importTransferKey } from "@/lib/crypto";
+import { encryptAndUpload, downloadAndDecrypt, deleteShare } from "@/lib/relay";
+import {
+  getTransferMode,
+  setTransferMode as persistTransferMode,
+  readKeyFromUrlFragment,
+  type TransferMode,
+} from "@/lib/transfer-mode";
 
 export type FileItem = {
   id: string;
@@ -39,7 +47,7 @@ export type Phase = TransferState | "expired";
 /** 5-minute ceiling for both paths (Path A session idle, Path B storage). */
 const SESSION_TTL_MS = 5 * 60 * 1000;
 /** Debounce for "peer-left" events. socket.io auto-reconnects on transient
- *  network blips — killing the session immediately on the first disconnect
+ *  network blips, killing the session immediately on the first disconnect
  *  is the #1 cause of "stuck at connecting" when the user's wifi flutters.
  *  We wait this long to see if the peer rejoins before showing an error. */
 const PEER_LEFT_GRACE_MS = 3000;
@@ -63,10 +71,14 @@ export type SessionState = {
   candidateType: "host" | "srflx" | "prflx" | "relay" | "unknown" | null;
   /** Sender-side: true once the sender has sent every chunk + the "done"
    *  control message and is WAITING for the receiver's "all-received" ack.
-   *  The UI uses this to swap "Beaming to X" → "Finishing up on X — keep
+   *  The UI uses this to swap "Beaming to X" → "Finishing up on X, keep
    *  this app open" so the user doesn't close the sender phone while the
    *  receiver is still draining late chunks + reassembling blobs. */
   finishing: boolean;
+  /** Transfer mode the user picked (persisted in localStorage). "auto" = try
+   *  P2P then fall back to the encrypted relay; "p2p" = direct only; "relay"
+   *  = encrypted server relay only. */
+  transferMode: TransferMode;
   /** Whether Path B (server storage) is available on this host. False on
    *  serverless hosts (Vercel) with no persistent disk → "Store temporarily"
    *  toggle is hidden. */
@@ -93,6 +105,7 @@ const INITIAL: SessionState = {
   peakSpeed: 0,
   candidateType: null,
   finishing: false,
+  transferMode: "auto",
   nearby: [],
 };
 
@@ -104,6 +117,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
     mode,
     phase: mode === "receiver" ? "waiting" : "idle",
     sessionId: mode === "receiver" ? sessionIdParam! : null,
+    // Read the persisted transfer mode on first render so the toggle shows
+    // the user's last choice immediately (and the relay/P2P branch in
+    // beginSending uses it).
+    transferMode: getTransferMode(),
   });
 
   const signalingRef = useRef<SignalingClient | null>(null);
@@ -117,11 +134,30 @@ export function useBeamSession(sessionIdParam?: string | null) {
   // files, we store the target here, open the file picker, and auto-send to
   // them once files are chosen (in beginSending).
   const pendingNearbyRef = useRef<{ socketId: string; deviceLabel?: string } | null>(null);
-  // peer-left debounce timer — socket.io auto-reconnects, so a brief signaling
+  // peer-left debounce timer, socket.io auto-reconnects, so a brief signaling
   // disconnect shouldn't immediately kill the session. We wait PEER_LEFT_GRACE_MS
   // to see if the peer comes back; if they do (server re-emits peer-joined),
   // we cancel the timer and the user keeps their transfer.
   const peerLeftTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Relay-path refs. `transferModeRef` + `phaseRef` mirror state so callbacks
+  // (beginSending, onPeerJoined, onSignal, timers) read the CURRENT values
+  // without re-creating on every state change. `keyRef` holds the AES key
+  // (base64url) for the current session, generated in beginSending for
+  // auto/relay modes, put in the QR fragment, read by the receiver from the
+  // URL fragment. `relayFallbackTimerRef` is the auto-mode 8s "P2P taking too
+  // long → pivot to relay" timer.
+  const transferModeRef = useRef<TransferMode>(state.transferMode);
+  const phaseRef = useRef<Phase>(state.phase);
+  const keyRef = useRef<string | null>(null);
+  const relayFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => { transferModeRef.current = state.transferMode; }, [state.transferMode]);
+  useEffect(() => { phaseRef.current = state.phase; }, [state.phase]);
+  // Receiver: read the decryption key from the URL fragment on mount.
+  useEffect(() => {
+    if (mode === "receiver") {
+      keyRef.current = readKeyFromUrlFragment();
+    }
+  }, [mode]);
 
   const patch = useCallback((p: Partial<SessionState>) => {
     setState((s) => ({ ...s, ...p }));
@@ -142,7 +178,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
     }, PEER_LEFT_GRACE_MS);
   }, []);
 
-  /** Cancel a pending peer-left error — called whenever we get evidence the
+  /** Cancel a pending peer-left error, called whenever we get evidence the
    *  peer is back (peer-joined, session-joined, any signal received). */
   const cancelPeerLeftError = useCallback(() => {
     if (peerLeftTimerRef.current) {
@@ -168,7 +204,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
     lobby.onConnect = () => lobby.joinLobby(myDevice);
     // Re-join on reconnect (socket.io auto-reconnects; re-announce presence)
     lobby.onDisconnect = () => {
-      // Clear the nearby list on disconnect — will repopulate on reconnect
+      // Clear the nearby list on disconnect, will repopulate on reconnect
       setState((s) => ({ ...s, nearby: [] }));
     };
     lobby.onLobbyList = (devices) => {
@@ -222,6 +258,9 @@ export function useBeamSession(sessionIdParam?: string | null) {
       // so the session handlers don't collide with lobby presence handlers.
       const sid = payload.sessionId;
       const inviter = payload.device?.name ?? "a device";
+      // Stash the sender's relay encryption key (if the sender is using
+      // relay/auto mode) so the relay-meta handler can decrypt with it.
+      if (payload.keyB64) keyRef.current = payload.keyB64;
       setState((s) => ({
         ...s,
         mode: "receiver" as const,
@@ -250,6 +289,16 @@ export function useBeamSession(sessionIdParam?: string | null) {
       };
       sessionSignaling.onSignal = (sigdata) => {
         cancelPeerLeftError();
+        // Relay path (same handler shape as the QR-receiver path).
+        if (sigdata.kind === "relay-meta") {
+          const keyB64 = keyRef.current;
+          if (!keyB64) {
+            patch({ phase: "error", error: "Decryption key missing from the URL, ask the sender to invite you again." });
+            return;
+          }
+          void runReceiverRelay(sigdata.payload.files, keyB64, patch, setState);
+          return;
+        }
         let transfer = transferRef.current;
         if (!transfer) {
           transfer = makeTransfer("receiver", sid, sessionSignaling, patch, setState, reconnectPrevPhase);
@@ -331,12 +380,26 @@ export function useBeamSession(sessionIdParam?: string | null) {
     };
     signaling.onSessionExpired = () => patch({ phase: "expired" });
     signaling.onPeerLeft = () => {
-      // Don't immediately error — wait PEER_LEFT_GRACE_MS for the peer to
+      // Don't immediately error, wait PEER_LEFT_GRACE_MS for the peer to
       // come back. Brief signaling disconnects are common on mobile.
       schedulePeerLeftError("The other device disconnected.");
     };
     signaling.onSignal = (sigdata) => {
       cancelPeerLeftError();
+      // RELAY path: the sender (on a different network) encrypted + uploaded
+      // the files to /api/share and sent us the share manifest. We fetch +
+      // decrypt each one locally with the key from the URL fragment. The
+      // signaling server only relayed the tiny manifest, never file bytes.
+      if (sigdata.kind === "relay-meta") {
+        const keyB64 = keyRef.current;
+        if (!keyB64) {
+          patch({ phase: "error", error: "This transfer was sent via the encrypted relay, but the decryption key is missing from the URL. Ask the sender to share the QR link again." });
+          return;
+        }
+        void runReceiverRelay(sigdata.payload.files, keyB64, patch, setState);
+        return;
+      }
+      // P2P path: WebRTC offer/answer/candidate.
       let transfer = transferRef.current;
       if (!transfer) {
         transfer = makeTransfer("receiver", sessionIdParam, signaling, patch, setState, reconnectPrevPhase);
@@ -359,7 +422,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const sendToNearbyRef = useRef<((socketId: string, deviceLabel?: string) => void) | null>(null);
 
   const beginSending = useCallback(
-    (files: File[]) => {
+    async (files: File[]) => {
       if (files.length === 0) return;
       rawFilesRef.current = files;
 
@@ -386,8 +449,23 @@ export function useBeamSession(sessionIdParam?: string | null) {
       const sessionId = genSessionId();
       sessionIdRef.current = sessionId;
       const origin = typeof window !== "undefined" ? window.location.origin : "https://beam.app";
-      const qrUrl = `${origin}/?r=${sessionId}`;
       const now = Date.now();
+
+      // Generate the per-session AES-GCM key for auto/relay modes. The relay
+      // path needs it to encrypt; auto needs it so the QR carries it in case
+      // P2P fails + we fall back to relay. p2p-only mode skips it (cleaner QR).
+      // The key goes in the URL FRAGMENT (#k=...) which browsers never send to
+      // the server, so the signaling relay + the Next.js server never see it.
+      const m = transferModeRef.current;
+      let keyB64: string | null = null;
+      if (m !== "p2p") {
+        keyB64 = await generateTransferKey();
+        keyRef.current = keyB64;
+      } else {
+        keyRef.current = null;
+      }
+      const fragment = keyB64 ? `#k=${keyB64}` : "";
+      const qrUrl = `${origin}/?r=${sessionId}${fragment}`;
 
       patch({
         sessionId,
@@ -398,6 +476,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         phase: "waiting",
         error: null,
         createdAt: now,
+        transferMode: m,
       });
 
       transferRef.current?.close();
@@ -412,7 +491,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       signaling.onSessionCreated = ({ createdAt }) => patch({ createdAt });
       signaling.onPeerJoined = ({ receiver }) => {
         const sid = sessionIdRef.current ?? sessionId;
-        // Peer came back (or joined fresh) — cancel any pending peer-left
+        // Peer came back (or joined fresh), cancel any pending peer-left
         // error that was queued during a brief signaling disconnect.
         cancelPeerLeftError();
         patch({
@@ -423,18 +502,50 @@ export function useBeamSession(sessionIdParam?: string | null) {
           // ICE negotiation, which looked like the connection wasn't taking.
           phase: "connecting",
         });
+        const m = transferModeRef.current;
+        const keyB64 = keyRef.current;
+        // RELAY mode: skip WebRTC entirely, go straight to the encrypted
+        // server relay. The user explicitly chose "Different networks".
+        if (m === "relay" && keyB64) {
+          patch({ phase: "transferring", transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, error: null, finishing: false });
+          void runSenderRelay(sid, signaling, rawFilesRef.current, keyB64, patch, setState);
+          return;
+        }
+        // P2P or AUTO: set up WebRTC.
         const transfer = makeTransfer("sender", sid, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
         transferRef.current = transfer;
         void transfer.createOffer();
+        // AUTO: if P2P can't connect (onFailed) OR doesn't reach
+        // "transferring" within 8s, pivot to the encrypted relay. The
+        // receiver already has the key from the QR fragment, so the fallback
+        // is seamless, the user doesn't need to do anything.
+        if (m === "auto" && keyB64) {
+          const pivotToRelay = () => {
+            if (relayFallbackTimerRef.current) { clearTimeout(relayFallbackTimerRef.current); relayFallbackTimerRef.current = null; }
+            try { transfer.close(); } catch { /* ignore */ }
+            transferRef.current = null;
+            patch({ phase: "transferring", error: null, transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, finishing: false });
+            void runSenderRelay(sid, signaling, rawFilesRef.current, keyB64, patch, setState);
+          };
+          // Override the P2P onFailed (which would normally error) → pivot.
+          transfer.onFailed = () => pivotToRelay();
+          // 8s safety: if P2P hasn't reached "transferring" by then, pivot.
+          // (onChannelOpen sets phase="transferring" → the check skips.)
+          relayFallbackTimerRef.current = setTimeout(() => {
+            if (phaseRef.current !== "transferring" && phaseRef.current !== "done") {
+              pivotToRelay();
+            }
+          }, 8000);
+        }
       };
       signaling.onSignal = (data) => {
-        // Any signal from the peer means they're alive — cancel pending errors.
+        // Any signal from the peer means they're alive, cancel pending errors.
         cancelPeerLeftError();
         transferRef.current?.handleSignal(data);
       };
       signaling.onPeerLeft = () => {
-        // Don't immediately go to error — socket.io auto-reconnects on brief
+        // Don't immediately go to error, socket.io auto-reconnects on brief
         // network blips. Wait PEER_LEFT_GRACE_MS for the peer to come back.
         schedulePeerLeftError("The receiver disconnected before the transfer finished.");
       };
@@ -450,10 +561,10 @@ export function useBeamSession(sessionIdParam?: string | null) {
    *  offer flow runs just like the QR path. Uses a SEPARATE SignalingClient
    *  for the session (not the lobby socket) so handlers don't collide. */
   const sendToNearby = useCallback(
-    (socketId: string, deviceLabel?: string) => {
+    async (socketId: string, deviceLabel?: string) => {
       const files = rawFilesRef.current;
       // If no files selected yet, open the file picker. Once the user picks
-      // files, beginSending() runs — but we stash the intended nearby target
+      // files, beginSending() runs, but we stash the intended nearby target
       // so we can auto-send to them right after.
       if (files.length === 0) {
         pendingNearbyRef.current = { socketId, deviceLabel };
@@ -465,7 +576,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
       }
       const lobby = lobbyRef.current;
       if (!lobby || !lobby.connected) {
-        patch({ error: "Not connected to nearby discovery yet — try again in a moment." });
+        patch({ error: "Not connected to nearby discovery yet, try again in a moment." });
         return;
       }
       const sessionId = genSessionId();
@@ -481,6 +592,20 @@ export function useBeamSession(sessionIdParam?: string | null) {
         imageUrl: isImageLike(f.name, f.type) ? URL.createObjectURL(f) : undefined,
       }));
       const total = items.reduce((a, b) => a + b.size, 0);
+
+      // Generate the relay key (for auto/relay modes). For nearby there's no
+      // QR to carry the key in a URL fragment, so we pass it via the invite
+      // payload (transits the user's own signaling server over WSS). The
+      // invitee stores it in keyRef via the onInvite handler.
+      const m = transferModeRef.current;
+      let keyB64: string | null = null;
+      if (m !== "p2p") {
+        keyB64 = await generateTransferKey();
+        keyRef.current = keyB64;
+      } else {
+        keyRef.current = null;
+      }
+
       patch({
         sessionId,
         qrUrl: null, // no QR for nearby send
@@ -491,6 +616,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
         error: null,
         createdAt: now,
         peerDevice: deviceLabel ? { label: deviceLabel, short: "" } : null,
+        transferMode: m,
       });
 
       transferRef.current?.close();
@@ -506,21 +632,54 @@ export function useBeamSession(sessionIdParam?: string | null) {
         signaling.createSession(sessionId, deviceInfo());
       };
       signaling.onSessionCreated = () => {
-        // Session is created — now invite the target device via the LOBBY socket.
-        // The invitee's lobby onInvite handler will make them join this session.
-        lobby.invite(socketId, sessionId, deviceInfo(), items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })));
+        // Session is created, now invite the target device via the LOBBY
+        // socket. The invitee's lobby onInvite handler will make them join
+        // this session. Pass the relay key so the invitee can decrypt (only
+        // when using auto/relay mode).
+        lobby.invite(
+          socketId,
+          sessionId,
+          deviceInfo(),
+          items.map((f) => ({ name: f.name, size: f.size, mime: f.mime })),
+          keyB64 ?? undefined,
+        );
       };
       signaling.onPeerJoined = ({ receiver }) => {
         cancelPeerLeftError();
         patch({
           peerDevice: receiver?.name ? labelToDescriptor(receiver.name) : null,
-          // Transition to "connecting" — see QR-path comment above.
+          // Transition to "connecting", see QR-path comment above.
           phase: "connecting",
         });
+        const m = transferModeRef.current;
+        const keyB64 = keyRef.current;
+        // RELAY mode: skip WebRTC, run the encrypted relay (same as the QR path).
+        if (m === "relay" && keyB64) {
+          patch({ phase: "transferring", transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, error: null, finishing: false });
+          void runSenderRelay(sessionId, signaling, rawFilesRef.current, keyB64, patch, setState);
+          return;
+        }
+        // P2P or AUTO: set up WebRTC.
         const transfer = makeTransfer("sender", sessionId, signaling, patch, setState, reconnectPrevPhase);
         transfer.queueFiles(rawFilesRef.current);
         transferRef.current = transfer;
         void transfer.createOffer();
+        // AUTO: 8s relay fallback (same as the QR path).
+        if (m === "auto" && keyB64) {
+          const pivotToRelay = () => {
+            if (relayFallbackTimerRef.current) { clearTimeout(relayFallbackTimerRef.current); relayFallbackTimerRef.current = null; }
+            try { transfer.close(); } catch { /* ignore */ }
+            transferRef.current = null;
+            patch({ phase: "transferring", error: null, transferStartedAt: Date.now(), transferEndedAt: null, peakSpeed: 0, finishing: false });
+            void runSenderRelay(sessionId, signaling, rawFilesRef.current, keyB64, patch, setState);
+          };
+          transfer.onFailed = () => pivotToRelay();
+          relayFallbackTimerRef.current = setTimeout(() => {
+            if (phaseRef.current !== "transferring" && phaseRef.current !== "done") {
+              pivotToRelay();
+            }
+          }, 8000);
+        }
       };
       signaling.onSignal = (data) => {
         cancelPeerLeftError();
@@ -709,7 +868,7 @@ export function useBeamSession(sessionIdParam?: string | null) {
   const copyAllText = useCallback(async (): Promise<number> => {
     const texts = state.files.filter((f) => f.text).map((f) => f.text as string);
     if (texts.length === 0) return 0;
-    const joined = texts.join("\n\n— — —\n\n");
+    const joined = texts.join("\n\n—, —\n\n");
     try {
       await navigator.clipboard.writeText(joined);
     } catch {
@@ -728,6 +887,17 @@ export function useBeamSession(sessionIdParam?: string | null) {
     }
   }, [state.qrUrl]);
 
+  /** Change the transfer mode (Auto / Same network / Different networks) and
+   *  persist it to localStorage so it sticks across sessions, exactly what
+   *  the user asked for ("keep it next time you open the site or until you
+   *  change it"). Only applies to the NEXT transfer (the current QR/session
+   *  is already locked to its mode at creation time). */
+  const changeTransferMode = useCallback((m: TransferMode) => {
+    persistTransferMode(m);
+    transferModeRef.current = m;
+    setState((s) => ({ ...s, transferMode: m }));
+  }, []);
+
   return useMemo(
     () => ({
       state,
@@ -744,10 +914,12 @@ export function useBeamSession(sessionIdParam?: string | null) {
       addMoreFiles,
       reorderFiles,
       sendPastedText,
+      changeTransferMode,
     }),
     [
       state, beginSending, sendToNearby, reset, cancel, saveFile, shareImage, shareAll,
       copyAllText, copyLink, removeFile, addMoreFiles, reorderFiles, sendPastedText,
+      changeTransferMode,
     ],
   );
 }
@@ -779,7 +951,7 @@ function makeTransfer(
       transferStartedAt: Date.now(),
       transferEndedAt: null,
       peakSpeed: 0,
-      // New transfer starting — clear any stale "finishing" flag from a
+      // New transfer starting, clear any stale "finishing" flag from a
       // previous run.
       finishing: false,
     });
@@ -846,14 +1018,29 @@ function makeTransfer(
       return { ...s, files, receivedBytes, totalBytes: s.totalBytes || files.reduce((a, b) => a + b.size, 0) };
     });
   };
+  // A single file couldn't be completed (connection died mid-file → we ended
+  // up with fewer bytes than expected). Mark it errored INSTEAD of leaving it
+  // "transferring" at 100% with a corrupt blob URL, which is what produced
+  // the "photos turn black" symptom (a partial image renders as black/blank).
+  t.onFileError = (file: IncomingFile, reason: string) => {
+    setState((s) => ({
+      ...s,
+      files: s.files.map((f) =>
+        f.id === file.id
+          ? { ...f, status: "error" as const, received: f.size, url: undefined }
+          : f,
+      ),
+      error: s.error ?? `${file.name}: ${reason}`,
+    }));
+  };
   t.onFileComplete = (file: IncomingFile, url: string) => {
     // CRITICAL FIX for "stuck at 100% with no download button":
     // Mark the file done + set the URL SYNCHRONOUSLY for ALL file types.
     // The text/image fetch happens in the background and patches `text` /
-    // `imageUrl` in afterwards — the Download button renders immediately.
+    // `imageUrl` in afterwards, the Download button renders immediately.
     // (Previously the text branch awaited fetch(url).then(r => r.text())
     // before marking done, so the user saw 100% with no button for the
-    // fetch duration — which could be 100s of ms or never resolve if the
+    // fetch duration, which could be 100s of ms or never resolve if the
     // blob URL fetch was somehow interrupted.)
     const isText = isTextLike(file.name, file.mime);
     const isImage = isImageLike(file.name, file.mime);
@@ -880,7 +1067,7 @@ function makeTransfer(
         .catch(() => { /* URL already set; text is optional */ });
     }
     // Side-load image preview URL in the background (only for small images
-    // where reusing the object URL is fine — the FileRow already shows it).
+    // where reusing the object URL is fine, the FileRow already shows it).
     if (url && isImage && file.size > 0 && file.size <= 16 * 1024 * 1024) {
       setState((s) => ({
         ...s,
@@ -899,7 +1086,7 @@ function makeTransfer(
       // The wait is over (receiver acked, or 20s fallback). Either way the
       // sender is no longer "finishing".
       finishing: false,
-      // SENDER: mark all files as done (they were sent — no URL needed).
+      // SENDER: mark all files as done (they were sent, no URL needed).
       // RECEIVER: do NOT mark files as done here. The receiver's finalizeFile
       // (async) is still reassembling blobs + creating URLs. If we mark them
       // done here, they'd be "done" with no URL → stuck at 100% with no
@@ -966,5 +1153,156 @@ function isTextLike(name: string, mime?: string): boolean {
 function isImageLike(name: string, mime?: string): boolean {
   if (mime && mime.startsWith("image/")) return true;
   const ext = name.split(".").pop()?.toLowerCase() ?? "";
-  return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico"].includes(ext);
+  return ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "avif", "ico", "heic", "heif"].includes(ext);
+}
+
+// ---------------------------------------------------------------------------
+// Relay path (Option B, encrypted server relay for cross-network transfers)
+// ---------------------------------------------------------------------------
+// The sender encrypts each file client-side (AES-GCM), uploads the ciphertext
+// to /api/relay, and sends the receiver a `relay-meta` signal with the share
+// IDs (tiny, just IDs, no file bytes). The receiver fetches each share,
+// decrypts with the key from the URL fragment, and reuses the exact same
+// onFileStart/onFileProgress/onFileComplete-style state updates so the UI is
+// identical to the P2P path.
+
+/** Sender relay: encrypt + upload each file, send the share manifest to the
+ *  receiver via the signaling server, then mark the phase done. */
+async function runSenderRelay(
+  sessionId: string,
+  signaling: SignalingClient,
+  files: File[],
+  keyB64: string,
+  patch: (p: Partial<SessionState>) => void,
+  setState: React.Dispatch<React.SetStateAction<SessionState>>,
+) {
+  try {
+    const key = await importTransferKey(keyB64);
+    let receivedBytes = 0;
+    const shares: RelayShare[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      // Mark this file "transferring".
+      setState((s) => ({
+        ...s,
+        phase: "transferring",
+        files: s.files.map((f, idx) => (idx === i ? { ...f, status: "transferring" as const } : f)),
+      }));
+      try {
+        const share = await encryptAndUpload(file, key, (loaded, total) => {
+          // Scale ciphertext upload progress → original file bytes.
+          const received = total > 0 ? Math.min(file.size, Math.round((loaded / total) * file.size)) : 0;
+          setState((s) => {
+            let rb = 0;
+            const fs = s.files.map((f, idx) => {
+              if (idx === i) { rb += received; return { ...f, received, status: "transferring" as const }; }
+              rb += f.received; return f;
+            });
+            return { ...s, files: fs, receivedBytes: rb };
+          });
+        });
+        shares.push(share);
+        receivedBytes += file.size;
+        // Sender-side: the receiver has the blob, so mark this file done
+        // (no URL on the sender, only the receiver builds one).
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f, idx) => (idx === i ? { ...f, status: "done" as const, received: f.size } : f)),
+          receivedBytes,
+        }));
+      } catch (e) {
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f, idx) => (idx === i ? { ...f, status: "error" as const } : f)),
+          error: s.error ?? `${file.name}: ${String(e)}`,
+        }));
+      }
+    }
+    // Send the share manifest to the receiver via the signaling server. The
+    // server relays only this tiny JSON (share IDs + original metadata) —
+    // never file bytes. The receiver uses the IDs to GET the ciphertext from
+    // /api/relay and decrypts locally with the key from the URL fragment.
+    signaling.sendSignal(sessionId, { kind: "relay-meta", payload: { files: shares } });
+    // Mark done on the sender.
+    setState((s) => ({ ...s, phase: "done", transferEndedAt: Date.now(), speed: 0, finishing: false }));
+  } catch (e) {
+    patch({ phase: "error", error: `Relay upload failed: ${String(e)}` });
+  }
+}
+
+/** Receiver relay: fetch + decrypt each share, fire onFileComplete-equivalent
+ *  state updates (reusing the same FileItem shape so the UI is identical to
+ *  the P2P path). One-time-use: DELETE each share after a successful decrypt. */
+async function runReceiverRelay(
+  shares: RelayShare[],
+  keyB64: string,
+  patch: (p: Partial<SessionState>) => void,
+  setState: React.Dispatch<React.SetStateAction<SessionState>>,
+) {
+  try {
+    const key = await importTransferKey(keyB64);
+    // Build the file list from the shares.
+    const items: FileItem[] = shares.map((sh, i) => ({
+      id: `relay-${i}-${sh.id}`,
+      name: sh.name,
+      size: sh.size,
+      mime: sh.mime,
+      received: 0,
+      status: "queued" as const,
+    }));
+    setState((s) => ({
+      ...s,
+      files: items,
+      totalBytes: items.reduce((a, b) => a + b.size, 0),
+      receivedBytes: 0,
+      phase: "transferring",
+      transferStartedAt: Date.now(),
+      transferEndedAt: null,
+      error: null,
+    }));
+    for (let i = 0; i < shares.length; i++) {
+      const sh = shares[i];
+      const id = items[i].id;
+      setState((s) => ({
+        ...s,
+        files: s.files.map((f) => (f.id === id ? { ...f, status: "transferring" as const } : f)),
+      }));
+      try {
+        const { url, name, size, mime } = await downloadAndDecrypt(sh.id, key, (loaded, total) => {
+          const received = total > 0 ? Math.min(size, Math.round((loaded / total) * size)) : 0;
+          setState((s) => {
+            let rb = 0;
+            const fs = s.files.map((f) => {
+              if (f.id === id) { rb += received; return { ...f, received, status: "transferring" as const }; }
+              rb += f.received; return f;
+            });
+            return { ...s, files: fs, receivedBytes: rb };
+          });
+        });
+        // Mark done + set the blob URL (same shape as the P2P onFileComplete).
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) => (f.id === id ? { ...f, status: "done" as const, received: f.size, url, mime } : f)),
+        }));
+        // Side-load text/image previews (same as the P2P path).
+        if (url && isTextLike(name, mime) && size > 0 && size <= 256 * 1024) {
+          fetch(url).then((r) => r.text()).then((text) => setState((s) => ({ ...s, files: s.files.map((f) => (f.id === id ? { ...f, text } : f)) }))).catch(() => {});
+        }
+        if (url && isImageLike(name, mime) && size > 0 && size <= 16 * 1024 * 1024) {
+          setState((s) => ({ ...s, files: s.files.map((f) => (f.id === id ? { ...f, imageUrl: url } : f)) }));
+        }
+        // One-time-use cleanup.
+        deleteShare(sh.id);
+      } catch (e) {
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) => (f.id === id ? { ...f, status: "error" as const } : f)),
+          error: s.error ?? `${sh.name}: ${String(e)}`,
+        }));
+      }
+    }
+    setState((s) => ({ ...s, phase: "done", transferEndedAt: Date.now(), speed: 0 }));
+  } catch (e) {
+    patch({ phase: "error", error: `Relay download failed: ${String(e)}` });
+  }
 }

@@ -64,7 +64,7 @@ export function ReceiverPanel({
   const textCount = files.filter((f) => f.text).length;
   const hasMultiple = files.length > 1;
 
-  // Connecting / waiting state — Path A only. Shows a timeout after 20s
+  // Connecting / waiting state, Path A only. Shows a timeout after 20s
   // (the signaling server on Render's free tier sleeps after 15 min idle and
   // takes ~30s to wake; this gives it time while keeping the user informed).
   const [connectTime, setConnectTime] = React.useState(0);
@@ -102,7 +102,7 @@ export function ReceiverPanel({
                 <button
                   type="button"
                   onClick={() => window.location.reload()}
-                  className="mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground transition-transform active:scale-[0.97] hover:scale-[1.03]"
+                  className="edge-light mt-5 inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground shadow-[0_4px_16px_-4px_var(--brand)] transition-all duration-200 active:scale-[0.97] hover:scale-[1.03] hover:brightness-110"
                 >
                   <RotateCcw className="h-4 w-4" strokeWidth={2.5} /> Retry
                 </button>
@@ -145,7 +145,7 @@ export function ReceiverPanel({
             <button
               type="button"
               onClick={onReset}
-              className="mt-6 inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-transform active:scale-[0.97] hover:bg-secondary"
+              className="mt-6 inline-flex items-center gap-2 rounded-full border border-border bg-card px-5 py-2.5 text-sm font-semibold text-foreground transition-all duration-200 active:scale-[0.97] hover:bg-secondary hover:border-primary/30"
             >
               <RotateCcw className="h-4 w-4" strokeWidth={2} /> Go back
             </button>
@@ -155,16 +155,16 @@ export function ReceiverPanel({
     );
   }
 
-  // Connected / transferring / done / error — file list view.
+  // Connected / transferring / done / error, file list view.
   return (
     <div className="w-full max-w-[540px]">
       {/* Header */}
       <div className="mb-5 flex items-center gap-4">
-        <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+        <div className="edge-light flex h-12 w-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground shadow-[0_4px_16px_-4px_var(--brand)]">
           <Smartphone className="h-6 w-6" strokeWidth={1.75} />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="font-display text-[19px] font-bold text-foreground">
+          <p className="font-display text-[19px] font-bold tracking-[-0.01em] text-foreground">
             {phase === "done" ? "All yours" : "Receiving files"}
           </p>
           <p className="truncate text-sm text-muted-foreground">
@@ -180,7 +180,7 @@ export function ReceiverPanel({
           </div>
         )}
         {phase === "done" && (
-          <div className="ml-auto flex h-10 w-10 items-center justify-center rounded-full bg-primary">
+          <div className="ml-auto flex h-10 w-10 items-center justify-center rounded-full bg-primary shadow-[0_4px_16px_-4px_var(--brand)]">
             <Check className="h-5 w-5 text-primary-foreground" strokeWidth={2.5} />
           </div>
         )}
@@ -201,14 +201,14 @@ export function ReceiverPanel({
         </div>
       )}
 
-      {/* "Press Save to download" banner — makes it crystal clear files
+      {/* "Press Save to download" banner, makes it crystal clear files
           aren't auto-downloaded, the user must tap Save. */}
       {phase === "done" && (
-        <div className="animate-beam-up mb-5 flex items-start gap-3 rounded-2xl border-2 border-primary/30 bg-primary/5 px-4 py-3.5">
+        <div className="edge-light animate-beam-up mb-5 flex items-start gap-3 rounded-2xl border-2 border-primary/30 bg-primary/5 px-4 py-3.5">
           <Download className="mt-0.5 h-5 w-5 shrink-0 text-primary" strokeWidth={2} />
           <div>
-            <p className="font-display text-[15px] font-bold text-foreground">
-              All files arrived — press Download to save
+            <p className="font-display text-[15px] font-bold tracking-[-0.01em] text-foreground">
+              All files arrived, press Download to save
             </p>
             <p className="mt-0.5 text-[13px] leading-relaxed text-muted-foreground">
               Your files landed safely and the sender has been told you're all set. Tap Download on each one to save it to this device. They're not downloaded automatically.
@@ -221,11 +221,11 @@ export function ReceiverPanel({
       {phase === "reconnecting" && (
         <div className="mb-4 flex items-center gap-3 rounded-2xl border border-border bg-secondary/60 px-4 py-3">
           <WifiOff className="h-5 w-5 shrink-0 text-muted-foreground" strokeWidth={1.75} />
-          <p className="text-sm text-muted-foreground">Connection dipped. Reconnecting — hang on.</p>
+          <p className="text-sm text-muted-foreground">Connection dipped. Reconnecting, hang on.</p>
         </div>
       )}
 
-      {/* Keep-phones-on banner — the #1 cause of "stuck at 100%" is the
+      {/* Keep-phones-on banner, the #1 cause of "stuck at 100%" is the
           user (or the sender) closing/locking their phone mid-transfer,
           which tears down the WebRTC connection before late chunks land.
           This banner makes the contract explicit on the receiving side too. */}
@@ -237,7 +237,7 @@ export function ReceiverPanel({
               Keep both phones on
             </p>
             <p className="mt-0.5 text-[12px] leading-relaxed text-muted-foreground">
-              Keep this app open and both phones unlocked until every file shows “Ready to save”. Closing either device — or the sender leaving early — can interrupt the transfer and leave files stuck at 100%.
+              Keep this app open and both phones unlocked until every file shows “Ready to save”. Closing either device, or the sender leaving early, can interrupt the transfer and leave files stuck at 100%.
             </p>
           </div>
         </div>
@@ -289,7 +289,7 @@ export function ReceiverPanel({
             <button
               type="button"
               onClick={onSaveAll}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition-all duration-200 active:scale-[0.97] hover:scale-[1.03]"
+              className="animate-glow-pulse edge-light inline-flex items-center gap-2 rounded-full bg-primary px-6 py-3 text-sm font-bold text-primary-foreground transition-all duration-200 active:scale-[0.97] hover:scale-[1.03] hover:brightness-110"
             >
               <Download className="h-5 w-5" strokeWidth={2.5} /> Download all
             </button>

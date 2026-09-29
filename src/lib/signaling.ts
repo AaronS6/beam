@@ -28,12 +28,22 @@ export type InvitePayload = {
   from: string;
   device: DeviceInfo;
   files?: { name: string; size: number; mime?: string }[];
+  /** AES-GCM key (base64url) for the relay path. Only set when the sender
+   *  picked "Different networks" / "Auto" mode. NOTE: unlike the QR path
+   *  (where the key lives in the URL fragment and never hits the server),
+   *  this transits the signaling server over WSS. Acceptable because the
+   *  user operates their own signaling server; for a third-party signaling
+   *  server, prefer the QR + relay flow instead. */
+  keyB64?: string;
 };
+
+export type RelayShare = { id: string; name: string; size: number; mime?: string };
 
 export type SignalData =
   | { kind: "offer"; payload: RTCSessionDescriptionInit }
   | { kind: "answer"; payload: RTCSessionDescriptionInit }
-  | { kind: "candidate"; payload: RTCIceCandidateInit };
+  | { kind: "candidate"; payload: RTCIceCandidateInit }
+  | { kind: "relay-meta"; payload: { files: RelayShare[] } };
 
 const SIGNALING_PORT = "3003";
 
@@ -143,9 +153,17 @@ export class SignalingClient {
   }
 
   /** Sender: invite a specific nearby device (by socketId) to receive files.
-   *  The target's `onInvite` fires; they call joinSession(sessionId). */
-  invite(toSocketId: string, sessionId: string, device: DeviceInfo, files?: { name: string; size: number; mime?: string }[]) {
-    this.socket.emit("invite", { to: toSocketId, sessionId, device, files });
+   *  The target's `onInvite` fires; they call joinSession(sessionId). `keyB64`
+   *  is only set for relay/auto mode (so the invitee can decrypt the relayed
+   *  ciphertext); omitted for pure-P2P mode. */
+  invite(
+    toSocketId: string,
+    sessionId: string,
+    device: DeviceInfo,
+    files?: { name: string; size: number; mime?: string }[],
+    keyB64?: string,
+  ) {
+    this.socket.emit("invite", { to: toSocketId, sessionId, device, files, keyB64 });
   }
 
   disconnect() {

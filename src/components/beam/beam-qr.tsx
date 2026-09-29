@@ -4,7 +4,7 @@ import * as React from "react";
 import QRCode from "qrcode";
 
 /**
- * BeamQR — renders a QR code (always on a white inset for maximum scanner
+ * BeamQR, renders a QR code (always on a white inset for maximum scanner
  * compatibility) via the `qrcode` package, fully client-side.
  */
 export function BeamQR({

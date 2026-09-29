@@ -3,7 +3,7 @@
 import * as React from "react";
 
 /**
- * SessionCountdown — shows the remaining time before the session auto-expires
+ * SessionCountdown, shows the remaining time before the session auto-expires
  * (~10 min from createdAt). Calm, muted; turns amber in the final minute.
  */
 const SESSION_TTL_MS = 10 * 60 * 1000;

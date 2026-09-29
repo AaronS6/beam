@@ -3,7 +3,7 @@
 import * as React from "react";
 
 /**
- * Confetti — a lightweight CSS confetti burst. Renders N colored dots that
+ * Confetti, a lightweight CSS confetti burst. Renders N colored dots that
  * fly outward from the center, then fades. Pure CSS animation, no library.
  * Shows when `trigger` is true, auto-hides after 1.5s.
  */

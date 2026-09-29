@@ -4,7 +4,7 @@ import * as React from "react";
 import { ExternalLink, AlertCircle, Copy, Check } from "lucide-react";
 
 /**
- * InAppBrowserDetect — detects if the user is in a restricted in-app browser
+ * InAppBrowserDetect, detects if the user is in a restricted in-app browser
  * (Instagram, Facebook, TikTok, LinkedIn, Snapchat, etc.) that blocks
  * WebSockets and/or WebRTC. Shows a clean URL they can copy or type into
  * their real browser.
@@ -34,7 +34,7 @@ export function InAppBrowserDetect() {
   const [show, setShow] = React.useState(false);
   const [copied, setCopied] = React.useState(false);
 
-  // The clean URL to show — just the origin, no query params.
+  // The clean URL to show, just the origin, no query params.
   // E.g. "mybeam.vercel.app" instead of "mybeam.vercel.app/?r=ABC123&utm_source=ig"
   const cleanUrl = typeof window !== "undefined" ? window.location.origin.replace(/^https?:\/\//, "") : "";
 

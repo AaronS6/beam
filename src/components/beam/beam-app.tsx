@@ -30,6 +30,7 @@ export function BeamApp() {
     addMoreFiles,
     reorderFiles,
     sendPastedText,
+    changeTransferMode,
   } = useBeamSession(sessionIdParam);
 
   // ---- Web Share Target: pick up files shared TO Beam from the phone's
@@ -90,12 +91,12 @@ export function BeamApp() {
       if (!retrieved) retrieveSharedFiles(navigator.serviceWorker.controller);
     }, 1000);
 
-    // Attempt 4: retry after 3s (last chance — SW was slow to start)
+    // Attempt 4: retry after 3s (last chance, SW was slow to start)
     setTimeout(() => {
       if (!retrieved) retrieveSharedFiles(navigator.serviceWorker.controller);
     }, 3000);
 
-    // Attempt 5: retry after 5s (absolute last — Render server waking up)
+    // Attempt 5: retry after 5s (absolute last, Render server waking up)
     setTimeout(() => {
       if (!retrieved) retrieveSharedFiles(navigator.serviceWorker.controller);
     }, 5000);
@@ -188,7 +189,7 @@ export function BeamApp() {
   return (
     <div className="relative flex min-h-screen flex-col">
       <BackgroundDecor />
-      {/* Window-level drag overlay — ONLY appears while actively dragging files in.
+      {/* Window-level drag overlay, ONLY appears while actively dragging files in.
           Inactive otherwise (the idle card stays clean). */}
       {(state.phase === "idle" || state.phase === "waiting") && (
         <DragOverlay onFiles={beginSending} />
@@ -198,16 +199,16 @@ export function BeamApp() {
         {/* Hero */}
         <section className="mx-auto w-full max-w-3xl px-5 pb-16 pt-10 text-center sm:px-8 sm:pb-20 sm:pt-14">
           <div className="animate-beam-pop">
-            <p className="mb-5 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-semibold text-muted-foreground backdrop-blur-sm">
-              <span className="h-1.5 w-1.5 animate-beam-breathe rounded-full bg-primary" />
+            <p className="mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-3.5 py-1.5 text-xs font-semibold tracking-wide text-muted-foreground backdrop-blur-sm">
+              <span className="h-1.5 w-1.5 animate-beam-breathe rounded-full bg-primary shadow-[0_0_8px_var(--brand)]" />
               Files that go straight from you to them
             </p>
-            <h1 className="font-display text-balance text-[42px] font-extrabold leading-[1.0] tracking-tight text-foreground sm:text-[58px] lg:text-[72px]">
+            <h1 className="font-display text-balance text-[44px] font-extrabold leading-[0.98] tracking-[-0.03em] text-foreground sm:text-[60px] lg:text-[76px]">
               Just drop your files<br className="hidden sm:block" /> and{" "}
-              <span className="text-beam-animate">scan.</span>
+              <span className="text-beam-animate text-beam-glow">scan.</span>
             </h1>
-            <p className="mx-auto mt-5 max-w-[46ch] text-[16px] leading-relaxed text-muted-foreground sm:text-[18px]">
-              They go straight to the other device — peer-to-peer, encrypted, gone the moment they land. No app, no account, no servers in the middle.
+            <p className="mx-auto mt-6 max-w-[46ch] text-[16px] leading-relaxed text-muted-foreground sm:text-[18px]">
+              They go straight to the other device, peer-to-peer, encrypted, gone the moment they land. No app, no account, no servers in the middle.
             </p>
           </div>
 
@@ -224,6 +225,8 @@ export function BeamApp() {
                 onReorderFiles={reorderFiles}
                 onPasteText={sendPastedText}
                 onPickNearby={sendToNearby}
+                transferMode={state.transferMode}
+                onTransferModeChange={changeTransferMode}
               />
             </div>
           </div>

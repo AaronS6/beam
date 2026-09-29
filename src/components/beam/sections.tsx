@@ -8,13 +8,13 @@ const STEPS = [
     n: "1",
     icon: ScanLine,
     title: "Drop & scan",
-    body: "Toss your files into the card and point any phone camera at the QR. No app to install — it pops open in the browser.",
+    body: "Toss your files into the card and point any phone camera at the QR. No app to install, it pops open in the browser.",
   },
   {
     n: "2",
     icon: Zap,
     title: "Straight across",
-    body: "The two devices find a direct path and beam the bytes across — encrypted, peer-to-peer, never stored anywhere.",
+    body: "The two devices find a direct path and beam the bytes across, encrypted, peer-to-peer, never stored anywhere.",
   },
   {
     n: "3",
@@ -28,27 +28,27 @@ export function HowItWorks() {
   return (
     <section id="how-it-works" className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
       <div className="mb-12 sm:mb-16">
-        <h2 className="font-display text-[32px] font-bold leading-tight tracking-tight text-foreground sm:text-[44px]">
+        <h2 className="font-display text-[32px] font-bold leading-[1.05] tracking-[-0.025em] text-foreground sm:text-[44px]">
           Three steps. No sign-up, no fuss.
         </h2>
         <p className="mt-3 max-w-[52ch] text-[17px] leading-relaxed text-muted-foreground">
-          Works between any two devices with a browser and a camera — Android, iPhone, laptop, desktop, any mix you like.
+          Works between any two devices with a browser and a camera, Android, iPhone, laptop, desktop, any mix you like.
         </p>
       </div>
       <div className="grid gap-4 sm:grid-cols-3 sm:gap-5">
         {STEPS.map((s, i) => (
           <div
             key={s.n}
-            className="group animate-beam-up rounded-3xl border border-border bg-card p-6 transition-all duration-300 hover:-translate-y-1 hover:border-primary/40"
+            className="edge-light group animate-beam-up rounded-3xl border border-border bg-card p-6 transition-all duration-300 hover:-translate-y-1 hover:border-primary/40 hover:shadow-float-strong"
             style={{ animationDelay: `${i * 80}ms` }}
           >
             <div className="mb-5 flex items-center justify-between">
-              <span className="flex h-11 w-11 items-center justify-center rounded-2xl bg-beam text-white shadow-sm transition-transform duration-300 group-hover:scale-105">
+              <span className="edge-light flex h-11 w-11 items-center justify-center rounded-2xl bg-beam text-white shadow-[0_4px_16px_-4px_var(--brand)] transition-transform duration-300 group-hover:scale-110 group-hover:rotate-3">
                 <s.icon className="h-5 w-5" strokeWidth={1.75} />
               </span>
               <span className="text-sm font-semibold tabular-nums text-muted-foreground/50">{s.n}</span>
             </div>
-            <h3 className="font-display text-xl font-bold text-foreground">{s.title}</h3>
+            <h3 className="font-display text-xl font-bold tracking-[-0.01em] text-foreground">{s.title}</h3>
             <p className="mt-2 text-[15px] leading-relaxed text-muted-foreground">{s.body}</p>
           </div>
         ))}
@@ -62,28 +62,28 @@ export function Privacy() {
     <section id="privacy" className="mx-auto w-full max-w-6xl px-5 py-20 sm:px-8 sm:py-28">
       <div className="grid gap-10 sm:grid-cols-[1fr_1.1fr] sm:gap-16">
         <div>
-          <div className="mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-beam text-white">
+          <div className="edge-light mb-6 flex h-12 w-12 items-center justify-center rounded-2xl bg-beam text-white shadow-[0_4px_16px_-4px_var(--brand)]">
             <ShieldCheck className="h-6 w-6" strokeWidth={1.75} />
           </div>
-          <h2 className="font-display text-[32px] font-bold leading-tight tracking-tight text-foreground sm:text-[44px]">
+          <h2 className="font-display text-[32px] font-bold leading-[1.05] tracking-[-0.025em] text-foreground sm:text-[44px]">
             Your files don't pass through us.
           </h2>
           <p className="mt-4 max-w-[52ch] text-[17px] leading-relaxed text-muted-foreground">
-            Once two devices pair, they open a direct encrypted connection and send the bytes between themselves. Our server only helps them find each other — it carries setup, never your files.
+            Once two devices pair, they open a direct encrypted connection and send the bytes between themselves. Our server only helps them find each other, it carries setup, never your files.
           </p>
         </div>
         <ul className="space-y-4">
           {[
             { icon: Zap, t: "Peer-to-peer by default", d: "Files flow directly from one device to the other over WebRTC, encrypted end to end with DTLS." },
             { icon: Lock, t: "Nothing is stored", d: "There's no upload bucket and no retention. Close the tab and the session is gone for good." },
-            { icon: Clock, t: "Links expire fast", d: "A session self-destructs after 5 minutes if no one connects — or the instant the file is grabbed, whichever comes first." },
+            { icon: Clock, t: "Links expire fast", d: "A session self-destructs after 5 minutes if no one connects, or the instant the file is grabbed, whichever comes first." },
           ].map((item, i) => (
             <li
               key={item.t}
-              className="animate-beam-up flex items-start gap-4 rounded-2xl border border-border bg-card p-4"
+              className="edge-light animate-beam-up flex items-start gap-4 rounded-2xl border border-border bg-card p-4 transition-all duration-300 hover:border-primary/30 hover:bg-card/80"
               style={{ animationDelay: `${i * 80}ms` }}
             >
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-beam text-white">
+              <span className="edge-light flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-beam text-white">
                 <item.icon className="h-5 w-5" strokeWidth={1.75} />
               </span>
               <div>

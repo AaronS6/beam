@@ -4,7 +4,7 @@ import * as React from "react";
 import { Clock } from "lucide-react";
 
 /**
- * PathCountdown — honest countdown to deletion.
+ * PathCountdown, honest countdown to deletion.
  * Path A: counts down the 5-min session window (no peer → expire).
  * Path B: counts down the 5-min storage window (auto-delete server-side).
  */

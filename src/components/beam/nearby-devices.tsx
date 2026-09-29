@@ -4,7 +4,7 @@ import * as React from "react";
 import { Smartphone, Laptop, Monitor, Tablet, Users, Radio } from "lucide-react";
 
 /**
- * NearbyDevices — ALWAYS shows the "send to someone nearby" section.
+ * NearbyDevices, ALWAYS shows the "send to someone nearby" section.
  * When devices are online, lists them as tappable chips.
  * When alone, shows a calm "waiting for others" state.
  */

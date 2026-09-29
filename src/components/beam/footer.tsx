@@ -4,7 +4,16 @@ import * as React from "react";
 
 export function Footer() {
   return (
-    <footer className="relative z-10 border-t border-border bg-background/40 backdrop-blur-sm">
+    <footer className="relative z-10 mt-auto border-t border-border/60 bg-background/40 backdrop-blur-md">
+      {/* Faint top-edge light reflection, matches the nav's edge highlight. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-0 top-0 h-px"
+        style={{
+          background:
+            "linear-gradient(90deg, transparent, color-mix(in srgb, var(--brand-haze) 18%, transparent) 50%, transparent)",
+        }}
+      />
       <div className="mx-auto flex max-w-6xl flex-col items-center gap-4 px-5 py-10 text-center sm:flex-row sm:justify-between sm:px-8 sm:text-left">
         <div className="flex items-center gap-2.5">
           <svg width="20" height="20" viewBox="0 0 64 64" fill="none" aria-hidden>
@@ -23,7 +32,7 @@ export function Footer() {
             </g>
           </svg>
           <span className="text-sm text-muted-foreground">
-            Files that disappear — by design.
+            Files that disappear, by design.
           </span>
         </div>
         <div className="flex items-center gap-5 text-sm text-muted-foreground">

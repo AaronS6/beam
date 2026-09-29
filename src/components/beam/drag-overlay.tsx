@@ -4,7 +4,7 @@ import * as React from "react";
 import { UploadCloud } from "lucide-react";
 
 /**
- * DragOverlay — a full-window overlay that appears ONLY when the user is
+ * DragOverlay, a full-window overlay that appears ONLY when the user is
  * actively dragging files over the page. Listens to window-level
  * dragenter/dragover/dragleave/drop. On drop, forwards the files to onFiles.
  * On drag leaving the window, hides itself.

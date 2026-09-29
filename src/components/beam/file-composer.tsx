@@ -5,12 +5,12 @@ import { ImagePlus, UploadCloud, FilePlus2, Type, Send } from "lucide-react";
 import { formatBytes } from "@/lib/format";
 
 /**
- * FileComposer — the idle-state hero inside the card.
+ * FileComposer, the idle-state hero inside the card.
  *
- * Default mode is IMAGES ("Send images") — the most common use case.
+ * Default mode is IMAGES ("Send images"), the most common use case.
  * A 3-way toggle (Images / Files / Text) sits dead-center, with the primary
  * action button centered below it. Drag-and-drop is handled at the window
- * level by <DragOverlay/> — it only appears the moment a user starts dragging.
+ * level by <DragOverlay/>, it only appears the moment a user starts dragging.
  */
 export function FileComposer({
   onFiles,
@@ -19,7 +19,7 @@ export function FileComposer({
   onFiles: (files: File[]) => void;
   onPasteText?: (text: string) => void;
 }) {
-  // DEFAULT = "images" — "Send images" is the primary CTA every time the site opens.
+  // DEFAULT = "images", "Send images" is the primary CTA every time the site opens.
   const [mode, setMode] = React.useState<"images" | "files" | "text">("images");
   const [text, setText] = React.useState("");
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -63,9 +63,9 @@ export function FileComposer({
 
   // Icon + headline + accept attribute depend on mode
   const icon =
-    mode === "images" ? <ImagePlus className="h-10 w-10 text-white" strokeWidth={1.75} />
-    : mode === "files" ? <UploadCloud className="h-10 w-10 text-white" strokeWidth={1.75} />
-    : <Type className="h-10 w-10 text-white" strokeWidth={1.75} />;
+    mode === "images" ? <ImagePlus className="h-9 w-9 text-white drop-shadow-sm" strokeWidth={1.85} />
+    : mode === "files" ? <UploadCloud className="h-9 w-9 text-white drop-shadow-sm" strokeWidth={1.85} />
+    : <Type className="h-9 w-9 text-white drop-shadow-sm" strokeWidth={1.85} />;
 
   const headline =
     mode === "images" ? "Send your images"
@@ -74,8 +74,8 @@ export function FileComposer({
 
   const subcopy =
     mode === "images" ? "Tap below, or just drag them onto the page whenever."
-    : mode === "files" ? "Any file type — docs, zips, whatever you've got."
-    : "A link, a note, a snippet — sent as a tiny file.";
+    : mode === "files" ? "Any file type, docs, zips, whatever you've got."
+    : "A link, a note, a snippet, sent as a tiny file.";
 
   const primaryLabel =
     mode === "images" ? "Send images"
@@ -87,7 +87,11 @@ export function FileComposer({
     : mode === "files" ? <FilePlus2 className="h-5 w-5 transition-transform duration-300 group-hover:rotate-6" strokeWidth={2.5} />
     : <Send className="h-5 w-5" strokeWidth={2.5} />;
 
-  const accept = mode === "images" ? "image/*" : undefined;
+  // Accept attribute for the image picker. `image/*` alone FILTERS OUT .heic
+  // on many browsers (notably Chrome on Android) because image/heic isn't in
+  // their MIME whitelist, so iPhone users couldn't pick their HEIC photos.
+  // Explicitly appending the extensions forces the picker to accept them.
+  const accept = mode === "images" ? "image/*,.heic,.heif" : undefined;
 
   const modes: { id: "images" | "files" | "text"; label: string; icon: typeof Type }[] = [
     { id: "images", label: "Images", icon: ImagePlus },
@@ -96,25 +100,33 @@ export function FileComposer({
   ];
 
   return (
-    <div className="flex flex-col px-7 pb-7 pt-8">
-      {/* Icon (static, centered) */}
-      <div
-        className="mx-auto mb-5 flex h-20 w-20 items-center justify-center rounded-[26px] shadow-float"
-        style={{ background: "var(--beam-gradient)" }}
-      >
-        {icon}
+    <div className="flex flex-col px-7 pb-3 pt-8">
+      {/* Icon (static, centered), the brand-gradient tile with a soft
+          blue halo behind it so it reads as a glowing emblem. */}
+      <div className="relative mx-auto mb-5">
+        <div
+          aria-hidden
+          className="pointer-events-none absolute -inset-3 -z-10 rounded-[32px] opacity-50 blur-xl"
+          style={{ background: "radial-gradient(circle, var(--brand) 0%, transparent 70%)" }}
+        />
+        <div
+          className="edge-light flex h-20 w-20 items-center justify-center rounded-[26px] shadow-float-strong"
+          style={{ background: "var(--beam-gradient)" }}
+        >
+          {icon}
+        </div>
       </div>
 
       {/* Headline + subcopy (centered) */}
-      <h2 className="font-display text-center text-[24px] font-bold tracking-tight text-foreground">
+      <h2 className="font-display text-center text-[25px] font-bold tracking-[-0.02em] text-foreground">
         {headline}
       </h2>
       <p className="mx-auto mt-1.5 max-w-[32ch] text-center text-sm leading-relaxed text-muted-foreground">
         {subcopy}
       </p>
 
-      {/* 3-way mode toggle — Images (default) / Files / Text — centered */}
-      <div className="mx-auto mt-5 inline-flex items-center rounded-full bg-secondary p-1 text-sm">
+      {/* 3-way mode toggle, Images (default) / Files / Text, centered */}
+      <div className="mx-auto mt-5 inline-flex items-center rounded-full border border-border/60 bg-secondary/80 p-1 text-sm backdrop-blur-sm">
         {modes.map((m) => {
           const Icon = m.icon;
           const active = mode === m.id;
@@ -125,18 +137,21 @@ export function FileComposer({
               onClick={() => setMode(m.id)}
               className={`inline-flex items-center gap-1.5 rounded-full px-4 py-1.5 font-semibold transition-all duration-300 ${
                 active
-                  ? "bg-card text-foreground shadow-sm"
+                  ? "bg-card text-foreground shadow-[0_2px_8px_rgba(0,0,0,0.4),0_0_20px_-4px_var(--brand)]"
                   : "text-muted-foreground hover:text-foreground"
               }`}
               aria-pressed={active}
             >
-              <Icon className="h-3.5 w-3.5" strokeWidth={2.5} /> {m.label}
+              <Icon
+                className={`h-3.5 w-3.5 transition-transform duration-300 ${active ? "scale-110 text-primary" : ""}`}
+                strokeWidth={2.5}
+              /> {m.label}
             </button>
           );
         })}
       </div>
 
-      {/* Primary action — centered */}
+      {/* Primary action, centered */}
       {mode === "text" ? (
         <div className="mx-auto mt-6 w-full max-w-sm">
           <textarea
@@ -144,7 +159,7 @@ export function FileComposer({
             onChange={(e) => setText(e.target.value)}
             placeholder="Paste a link, a note, a code snippet…"
             rows={4}
-            className="w-full resize-none rounded-2xl border border-border bg-secondary/40 px-4 py-3 text-[15px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-primary/40"
+            className="w-full resize-none rounded-2xl border border-border bg-secondary/40 px-4 py-3 text-[15px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-primary/50 focus:bg-secondary/60"
             onKeyDown={(e) => {
               if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); sendText(); }
             }}
@@ -157,7 +172,7 @@ export function FileComposer({
               type="button"
               onClick={sendText}
               disabled={!text.trim()}
-              className="inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground transition-all duration-200 active:scale-[0.96] hover:scale-[1.03] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100"
+              className="edge-light inline-flex items-center gap-2 rounded-full bg-primary px-5 py-2.5 text-sm font-bold text-primary-foreground shadow-[0_4px_16px_-4px_var(--brand)] transition-all duration-200 active:scale-[0.96] hover:scale-[1.03] hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:scale-100"
             >
               <Send className="h-4 w-4" strokeWidth={2.5} /> Send text
             </button>
@@ -167,7 +182,7 @@ export function FileComposer({
         <button
           type="button"
           onClick={openPicker}
-          className="animate-glow-pulse group mx-auto mt-6 inline-flex items-center gap-2.5 rounded-full bg-primary px-7 py-3.5 text-base font-bold text-primary-foreground transition-all duration-200 active:scale-[0.96] hover:scale-[1.03]"
+          className="animate-glow-pulse edge-light group mx-auto mt-6 inline-flex items-center gap-2.5 rounded-full bg-primary px-7 py-3.5 text-base font-bold text-primary-foreground transition-all duration-200 active:scale-[0.96] hover:scale-[1.03] hover:brightness-110"
         >
           {primaryIcon}
           {primaryLabel}
