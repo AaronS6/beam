@@ -1339,6 +1339,15 @@ async function runSenderRelay(
           receivedBytes,
         }));
       } catch (e) {
+        // CRITICAL: push a FAILED share entry so the receiver still knows this
+        // file exists + can mark it errored. Previously the catch only marked
+        // the file errored on the SENDER side + skipped pushing a share, so
+        // the relay-meta manifest was missing the failed file → the receiver
+        // rebuilt its file list from the (incomplete) manifest + silently
+        // dropped the failed file ("not all pictures sent" for multi-file
+        // transfers). Now every file gets an entry (successful with id, failed
+        // with failed=true) so the receiver's list always matches the sender's.
+        shares.push({ name: file.name || `file`, size: file.size, mime: file.type || undefined, failed: true });
         setState((s) => ({
           ...s,
           files: s.files.map((f, idx) => (idx === i ? { ...f, status: "error" as const } : f)),
@@ -1402,12 +1411,24 @@ async function runReceiverRelay(
     for (let i = 0; i < shares.length; i++) {
       const sh = shares[i];
       const id = items[i].id;
+      // FAILED upload (the sender pushed a share with failed=true). Mark the
+      // file errored on the receiver + skip the download — don't silently
+      // drop it. The user sees which file failed + can ask the sender to
+      // re-send just that one.
+      if (sh.failed) {
+        setState((s) => ({
+          ...s,
+          files: s.files.map((f) => (f.id === id ? { ...f, status: "error" as const } : f)),
+          error: s.error ?? `${sh.name}: upload failed on the sender's side`,
+        }));
+        continue;
+      }
       setState((s) => ({
         ...s,
         files: s.files.map((f) => (f.id === id ? { ...f, status: "transferring" as const } : f)),
       }));
       try {
-        const { url, name, size, mime } = await downloadAndDecrypt(sh.id, key, (loaded, total) => {
+        const { url, name, size, mime } = await downloadAndDecrypt(sh.id!, key, (loaded, total) => {
           const received = total > 0 ? Math.min(size, Math.round((loaded / total) * size)) : 0;
           setState((s) => {
             let rb = 0;
@@ -1431,7 +1452,7 @@ async function runReceiverRelay(
           setState((s) => ({ ...s, files: s.files.map((f) => (f.id === id ? { ...f, imageUrl: url } : f)) }));
         }
         // One-time-use cleanup.
-        deleteShare(sh.id);
+        deleteShare(sh.id!);
       } catch (e) {
         setState((s) => ({
           ...s,

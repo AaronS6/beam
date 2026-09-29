@@ -624,7 +624,18 @@ export class BeamTransfer {
           chunkIndex++;
           this.onFileProgress?.(meta.id, offset, meta.size);
         }
-        if (fileAborted) break; // channel is gone, remaining files can't send either
+        if (fileAborted) {
+          // This file's chunks failed (channel dying), but DON'T break the
+          // outer loop — continue to the next file. The file-start for this
+          // file was already sent, so the receiver has an entry for it; the
+          // "done" sweep at the end will finalize it (incomplete chunks →
+          // onFileError marks it errored, not silently dropped). Previously
+          // this broke the whole queue → files after the failed one were
+          // never sent ("not all pictures sent" for multi-file P2P).
+          // Skip the file-end for this file (chunks are incomplete); the done
+          // sweep handles finalization.
+          continue;
+        }
 
         // Tell the receiver this file is done, they reassemble + create the blob.
         // The sender does NOT fire onFileComplete here (no URL on the sender side;

@@ -37,7 +37,16 @@ export type InvitePayload = {
   keyB64?: string;
 };
 
-export type RelayShare = { id: string; name: string; size: number; mime?: string };
+export type RelayShare = {
+  /** The /api/relay share id. Absent (with failed=true) when this file's
+   *  upload failed, so the receiver still knows the file exists + can mark
+   *  it errored instead of silently dropping it. */
+  id?: string;
+  name: string;
+  size: number;
+  mime?: string;
+  failed?: boolean;
+};
 
 export type RelayManifestEntry = { name: string; size: number; mime?: string };
 

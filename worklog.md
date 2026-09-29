@@ -401,3 +401,28 @@ Work Log:
 Stage Summary:
 - "Stuck on black screen for a few seconds after scanning QR" is fixed. The sender now fires a `relay-start` signal the instant it begins the relay upload, so the receiver shows "Receiving files" + the file list immediately instead of sitting on the dark "Connecting…" screen for the entire upload duration. The unavoidable <1s signaling-connection delay remains, but the multi-second upload-period "black screen" is gone.
 - Files changed: src/lib/signaling.ts (relay-start kind), mini-services/signaling-server/index.ts (whitelist), src/hooks/use-beam-session.ts (runSenderRelay sends relay-start + handleRelayStart helper + both receiver onSignal handlers handle it + aligned file IDs).
+
+---
+Task ID: 25
+Agent: main (Z.ai Code)
+Task: Fix multi-file transfers failing / not sending all pictures (relay + same-Wi-Fi P2P).
+
+Work Log:
+- Root cause (RELAY): runSenderRelay's upload loop only pushed a share entry for SUCCESSFUL uploads (`shares.push(share)` in the try). The catch (for failed uploads) marked the file errored on the SENDER side but did NOT push a share. So if any file's upload failed (transient network blip, 500, disk-cap 507), the relay-meta manifest was missing that file → the receiver rebuilt its file list from the (incomplete) manifest → the failed file silently vanished ("not all pictures sent" for multi-file transfers).
+- Root cause (P2P, same Wi-Fi): sendQueuedFiles did `if (fileAborted) break;` after a file's chunk send threw, which broke the OUTER for loop → all files AFTER the failed one were never sent (+ their file-start never sent, so the receiver didn't even know they existed).
+- FIXED RELAY: 
+  * Made RelayShare.id optional + added `failed?: boolean` (src/lib/signaling.ts).
+  * runSenderRelay's catch now pushes a FAILED share entry (`{ name, size, mime, failed: true }`, no id) for every failed upload, so the relay-meta manifest always has an entry for EVERY file (successful with id, failed with failed=true). The sender continues uploading the remaining files (the catch doesn't break the loop).
+  * runReceiverRelay now checks `if (sh.failed)` at the top of the per-file loop → marks the file errored (red "Failed") + skips the download. So failed files APPEAR on the receiver (errored) instead of silently dropping. The user sees which file failed + can ask the sender to re-send just that one. Used `sh.id!` for the download/delete calls (the failed branch skips them).
+- FIXED P2P: changed `if (fileAborted) break;` → `if (fileAborted) { continue; }` so a failed file's chunk send doesn't abort the whole queue. The file-start was already sent (so the receiver has an entry); the "done" sweep at the end finalizes the incomplete file (received < size → onFileError marks it errored, the Task 14 fix). The remaining files continue sending.
+- Verified end-to-end with a SIMULATED failure (temporarily made /api/relay POST return 500 for files named "FAIL.txt", then removed the test hook):
+  * Uploaded 3 files (ok1.txt, FAIL.txt, ok2.txt) in relay mode.
+  * The receiver showed ALL 3: ok1.txt (done), FAIL.txt (**Failed** — red, NOT silently dropped), ok2.txt (done). The sender showed "All delivered · 3 files" (the relay-complete ack flowed after the receiver processed all 3).
+  * Without the fix, FAIL.txt would have vanished from the receiver's list (only ok1 + ok2 would show).
+  * dev.log confirmed the 3 POSTs (one returned 500 for FAIL.txt) + 2 GETs (ok1 + ok2 downloaded) + 2 DELETEs (cleanup).
+- Also verified the normal multi-file case (3 files, no failures): all 3 uploaded, downloaded, cleaned up; both sides reached done simultaneously (ack flowed).
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- Multi-file transfers no longer silently drop failed files. In relay mode, every file gets a relay-meta entry (successful with id, failed with failed=true), so the receiver's file list always matches the sender's — failed files show as "Failed" (red) instead of vanishing. In P2P mode, a failed chunk send no longer aborts the whole queue (continues to the next file; the incomplete file is finalized as errored by the done sweep). The user can see which files failed + re-send just those.
+- Files changed: src/lib/signaling.ts (RelayShare.id optional + failed flag), src/hooks/use-beam-session.ts (runSenderRelay pushes failed shares + runReceiverRelay handles them), src/lib/webrtc.ts (P2P continue instead of break on fileAborted).
