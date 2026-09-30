@@ -33,7 +33,13 @@ import {
  * sweeps expired files on every request.
  */
 
-const TTL_MS = 5 * 60 * 1000;
+// 30-minute TTL. Was 5 min, but bulk transfers (30+ photos) on a slow
+// cellular upload can take >5 min just to upload, so the EARLIEST shares
+// expired before the receiver downloaded them, the receiver downloaded in
+// order + the earliest ones 404'd, which is exactly the "2 succeed + 28
+// fail" symptom. 30 min gives plenty of headroom; the disk-cap + the R2
+// lifecycle rule still bound the total storage.
+const TTL_MS = 30 * 60 * 1000;
 
 export type RelayMeta = { name: string; size: number; mime: string };
 
@@ -67,8 +73,11 @@ export function isR2(): boolean {
 
 // ---- Disk fallback ----
 const SPILL_DIR = path.join(os.tmpdir(), "beam-relay");
+// 1 GB default cap (was 500 MB). Raised so bulk transfers of 30+ photos
+// (which can total hundreds of MB) don't hit the cap + 507 the later files.
+// Configurable via BEAM_RELAY_MAX_BYTES. On R2 there's no server-side cap.
 const MAX_TOTAL_BYTES =
-  Number(process.env.BEAM_RELAY_MAX_BYTES) || 500 * 1024 * 1024;
+  Number(process.env.BEAM_RELAY_MAX_BYTES) || 1024 * 1024 * 1024;
 
 const diskMetaPath = (id: string) => path.join(SPILL_DIR, `${id}.meta.json`);
 const diskBlobPath = (id: string) => path.join(SPILL_DIR, `${id}.bin`);
