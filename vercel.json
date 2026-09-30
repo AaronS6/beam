@@ -2,5 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "nextjs",
   "buildCommand": "bun run build",
-  "installCommand": "bun install"
+  "installCommand": "bun install",
+  "crons": [
+    {
+      "path": "/api/keep-warm",
+      "schedule": "*/10 * * * *"
+    }
+  ]
 }

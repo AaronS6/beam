@@ -55,6 +55,29 @@ export default function RootLayout({
         />
       </head>
       <body className="antialiased">
+        {/* Inline loading screen — shows BEFORE the external CSS/JS loads so the
+            receiver (who just scanned the QR) sees a spinner immediately instead
+            of a black screen. Inline-styled (no Tailwind dependency). React
+            replaces this on hydration (the children render on top). */}
+        <style dangerouslySetInnerHTML={{ __html: `
+          #beam-bootstrap{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:14px;background:#131722;z-index:9999;transition:opacity .3s}
+          #beam-bootstrap.hide{opacity:0;pointer-events:none}
+          .beam-bs-spin{width:28px;height:28px;border:3px solid #2E3850;border-top-color:#7AB8F0;border-radius:50%;animation:beam-bs-rot .8s linear infinite}
+          @keyframes beam-bs-rot{to{transform:rotate(360deg)}}
+          .beam-bs-text{font-family:-apple-system,system-ui,sans-serif;font-size:13px;font-weight:600;color:#8E9AB0;letter-spacing:-0.01em}
+        `}} />
+        <div id="beam-bootstrap" dangerouslySetInnerHTML={{ __html: `
+          <div class="beam-bs-spin"></div>
+          <div class="beam-bs-text">Beam</div>
+        `}} />
+        <script dangerouslySetInnerHTML={{ __html: `
+          // Hide the bootstrap loader when React actually renders content
+          // (the <main> element appears). Poll every 200ms, max 10s.
+          // (Hiding on DOMContentLoaded was too early — React hadn't hydrated
+          // yet, so the user saw a dark screen with no content.)
+          function hideBs(){var b=document.getElementById('beam-bootstrap');if(b){b.classList.add('hide');setTimeout(function(){b.remove()},400)}}
+          var pc=0;var pi=setInterval(function(){if(document.querySelector('main')||pc>50){clearInterval(pi);hideBs()}pc++},200);
+        `}} />
         <ThemeProvider>
           {children}
           <Toaster />

@@ -64,3 +64,22 @@ Stage Summary:
 - Code-side speedups applied (all safe, no throughput/reliability cost): multiple anycast STUN servers queried in parallel, ICE candidate pre-warming (iceCandidatePoolSize), and single-transport bundling (bundlePolicy: max-bundle). Together these cut the WebRTC-negotiation portion of "Connecting…" by avoiding the single-STUN round-trip stall and the per-channel ICE duplication.
 - The LARGEST remaining real-world contributor is NOT in code: the signaling server on Render's free tier sleeps after 15 min idle and takes ~30s to wake. Fix options for the user: (1) upgrade the beam-signaling Render service to a paid plan so it never sleeps (~$7/mo), or (2) add a free cron job (e.g. cron-job.org / GitHub Actions / UptimeRobot) that pings https://<signaling-url>/health every 10 minutes to keep it warm. The lobby client already keeps it warm while anyone has Beam open; the cold start only bites the first user after a 15+ min gap.
 - Files changed: src/lib/webrtc.ts (getIceServers + ensurePC).
+
+---
+Task ID: 32
+Agent: main (Z.ai Code)
+Task: Fix the "black screen for a very long time" on the receiver after scanning QR + add V1.0 to the footer + fix the presigned-URL metadata sidecar.
+
+Work Log:
+- Fixed the receiver "black screen" with two changes:
+  1. INLINE LOADING SCREEN (src/app/layout.tsx): added a `<style>` + `<div id="beam-bootstrap">` + `<script>` that show a spinner + "Beam" text on the dark bg IMMEDIATELY (before any external CSS/JS loads). Inline-styled (no Tailwind dependency). Hides via polling for `<main>` every 200ms (max 10s) — so it stays visible until React actually renders content, not just until DOMContentLoaded (which fires before hydration). This eliminates the "dark screen with no content" window during the JS bundle load on a slow cellular connection.
+  2. KEEP-WARM CRON (vercel.json + src/app/api/keep-warm/route.ts): Vercel calls /api/keep-warm every 10 min, which pings the Render signaling server's /health endpoint. Prevents the Render free tier from sleeping (sleeps after 15 min idle → ~30s to wake → the "black screen for 30s" the receiver sees after scanning the QR). With the cron, the signaling server stays warm → socket.io connects instantly.
+- Fixed the presigned-URL metadata sidecar (src/lib/relay-store.ts): the presigned PUT URL approach didn't store metadata on the R2 object (the client's XHR PUT doesn't send x-amz-meta-* headers). So the receiver's HEAD returned no metadata → name fell back to "file" (no extension) → inferMime couldn't infer the type → blob typed "application/octet-stream" → the <img> couldn't render → no thumbnail. Fixed by storing a separate `{id}.meta.json` sidecar on R2 during the probe (getPresignedUpload) + reading it back during the download (getPresignedDownload) instead of relying on the object's HEAD metadata. The storeDelete also cleans up the sidecar.
+- Added "v1.0" to the footer (src/components/beam/footer.tsx).
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- The receiver "black screen for a very long time" is fixed via: (1) an inline loading screen that shows a spinner immediately (before CSS/JS loads), hiding when React renders content; (2) a Vercel cron that pings the Render signaling server every 10 min to keep it warm (no 30s cold-start delay).
+- The presigned-URL metadata sidecar fixes the image thumbnail issue on Vercel (the receiver gets the correct filename + mime → inferMime infers the type → the blob is typed correctly → the <img> renders).
+- V1.0 added to the footer.
+- Files changed: src/app/layout.tsx (inline loading screen), vercel.json (keep-warm cron), src/app/api/keep-warm/route.ts (new, cron endpoint), src/lib/relay-store.ts (metadata sidecar), src/components/beam/footer.tsx (v1.0).
