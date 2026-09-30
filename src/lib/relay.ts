@@ -17,6 +17,26 @@ import type { RelayShare } from "./signaling";
 
 type FileMeta = { name: string; size: number; mime: string };
 
+/** Infer the correct MIME type from the file extension when the browser
+ *  didn't provide one (file.type is empty for some images, especially HEIC
+ *  on Android Chrome). Without this, the blob is typed
+ *  "application/octet-stream" → the <img> can't render it → shows a file
+ *  icon instead of the image thumbnail. */
+function inferMime(name: string, mime?: string): string {
+  if (mime && mime !== "application/octet-stream" && mime !== "") return mime;
+  const ext = name.split(".").pop()?.toLowerCase() ?? "";
+  const map: Record<string, string> = {
+    png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif",
+    webp: "image/webp", bmp: "image/bmp", svg: "image/svg+xml", avif: "image/avif",
+    heic: "image/heic", heif: "image/heif", ico: "image/x-icon",
+    pdf: "application/pdf", txt: "text/plain", mp4: "video/mp4", mov: "video/quicktime",
+    webm: "video/webm", mp3: "audio/mpeg", wav: "audio/wav", m4a: "audio/mp4",
+    zip: "application/zip", json: "application/json", csv: "text/csv",
+    html: "text/html", css: "text/css", js: "text/javascript",
+  };
+  return map[ext] || mime || "application/octet-stream";
+}
+
 // ---- Upload helpers ----
 
 /** XHR-based PUT to a presigned URL (S3 mode). Reports upload progress. */
@@ -81,7 +101,7 @@ export async function encryptAndUpload(
   const meta: FileMeta = {
     name: file.name || "file",
     size: file.size,
-    mime: file.type || "application/octet-stream",
+    mime: inferMime(file.name, file.type),
   };
   // AES-GCM encrypt in the browser. Returns iv(12) || ciphertext (with auth
   // tag). The server stores this opaquely — without the key it's noise.
@@ -186,7 +206,7 @@ export async function downloadAndDecrypt(
   }
 
   const plaintext = await decryptBlob(buffer, key); // throws on tamper
-  const blob = new Blob([plaintext], { type: mime });
+  const blob = new Blob([plaintext], { type: inferMime(name, mime) });
   const url = URL.createObjectURL(blob);
   return { blob, url, name, size, mime };
 }
