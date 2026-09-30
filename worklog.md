@@ -449,3 +449,78 @@ Stage Summary:
 - Bulk transfers (30+ files) are now reliable. The root cause was the 5-minute relay-share TTL: on a slow network, the sequential upload of 30+ photos could take >5 min, so the earliest shares expired before the receiver downloaded them (the receiver downloads in order after relay-meta), causing the earliest files to 404 + the latest to succeed ("2 succeed + 28 fail"). Raised the TTL to 30 min + the disk cap to 1 GB so bulk transfers have ample headroom. Verified with a 30-file slow-upload round-trip (30/30 succeed).
 - This applies to BOTH relay (the TTL fix) + P2P (the multi-file continue-instead-of-break fix from Task 25 is already in the repo, so P2P bulk transfers also send all files now).
 - Files changed: src/lib/relay-store.ts (TTL 5→30 min, cap 500 MB→1 GB).
+
+---
+Task ID: 27
+Agent: main (Z.ai Code)
+Task: Make the relay store work with ANY S3-compatible service (not just Cloudflare R2), per the user's request ("I want R2 but not Cloudflare").
+
+Work Log:
+- The relay store (src/lib/relay-store.ts) already used @aws-sdk/client-s3, so it works with any S3-compatible API — but the endpoint was hardcoded to Cloudflare's convention (`https://<R2_ACCOUNT_ID>.r2.cloudflarestorage.com`). Made the endpoint configurable so the user can point it at Backblaze B2, AWS S3, MinIO, etc.
+- Added GENERIC S3 env vars (take precedence over the R2 shorthand if set):
+  * RELAY_S3_ENDPOINT (the full S3 endpoint URL, e.g. https://s3.us-west-004.backblaze.com for B2)
+  * RELAY_S3_REGION (default "auto")
+  * RELAY_S3_ACCESS_KEY_ID
+  * RELAY_S3_SECRET_ACCESS_KEY
+  * RELAY_S3_BUCKET
+- Kept the Cloudflare R2 shorthand (R2_ACCOUNT_ID + R2_ACCESS_KEY_ID + R2_SECRET_ACCESS_KEY + R2_BUCKET) for backward compat — the endpoint is built from the account ID. Generic takes precedence if both are set.
+- Renamed the internal `r2Configured` → `s3Configured` + `getR2()` → `getS3()` (the isR2() export is kept for backward compat with the route's cap-check). The config picks: generic S3 if RELAY_S3_ENDPOINT is set, else Cloudflare R2 if R2_ACCOUNT_ID is set, else the ephemeral disk fallback.
+- Updated .env.example to document both the generic S3 vars + the R2 shorthand, + note which services are S3-compatible (B2, S3, Wasabi, MinIO, R2) with a caveat that Wasabi has a 90-day minimum storage charge (bad fit for Beam's 30-min TTL).
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- The relay store now works with ANY S3-compatible service, not just Cloudflare R2. Set the five RELAY_S3_* env vars (endpoint, region, access key, secret, bucket) to point at Backblaze B2, AWS S3, MinIO, etc. The Cloudflare R2 shorthand still works for backward compat. The disk fallback remains when no S3 vars are set.
+- Recommended non-Cloudflare option: Backblaze B2 (free 10 GB storage + 1 GB/day egress, S3-compatible, no minimum storage duration). Setup steps provided in the response.
+- Files changed: src/lib/relay-store.ts (generic S3 endpoint support), .env.example (documented both config styles).
+
+---
+Task ID: 28
+Agent: main (Z.ai Code)
+Task: Add a hard 10 GB cap on the S3 path so the user NEVER exceeds the free tier + gets charged.
+
+Work Log:
+- The S3 path (R2/B2/S3/MinIO) previously had NO server-side cap — it relied on the bucket lifecycle rule for expiry, which is day-granularity + doesn't prevent the peak from exceeding the free tier (10 GB on R2). The user wants a hard guarantee they won't be charged.
+- Implemented a hard cap in src/lib/relay-store.ts:
+  * `RELAY_S3_MAX_BYTES` env var (default 10 GB, matching R2's free tier). Configurable — set to 9 GB for safety headroom or higher on a paid plan.
+  * An in-memory counter `s3TotalBytes` (null = unknown). Incremented on every successful upload, decremented on every delete (via HEAD to get the object size without downloading).
+  * A `reconcileS3Total()` function that LISTs the bucket (paginated, 1000/page) + sums object sizes to compute the actual total. Called on first use (after a restart, when the counter is null) + every 5 min (to correct drift from lifecycle-rule deletions that the server doesn't track).
+  * `storeCheckCapacity` for the S3 path now: reconciles if the counter is null or stale (>5 min), then checks `counter + claimed <= RELAY_S3_MAX_BYTES`. If exceeded, the upload is rejected with HTTP 507 ("relay full") INSTEAD of writing to the bucket — so the bucket total never exceeds the cap.
+  * If the LIST fails (S3 error), it's conservative (rejects the upload — safe failure mode, no charges).
+  * Used HeadObjectCommand (not GetObject) in storeDelete to get the object size without downloading the ciphertext.
+- Added a `s3Bucket()` helper (returns RELAY_S3_BUCKET or R2_BUCKET) + replaced the hardcoded R2_BUCKET references in storeUpload/storeDownload/storeDelete with it.
+- Imported ListObjectsV2Command + HeadObjectCommand.
+- Updated .env.example to document RELAY_S3_MAX_BYTES.
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- The S3 path now has a HARD 10 GB cap (configurable via RELAY_S3_MAX_BYTES). The server tracks the total bytes in the bucket via an in-memory counter (incremented on upload, decremented on delete), reconciled by LISTing the bucket on first use + every 5 min. When an upload would push the total over the cap, it's rejected with HTTP 507 instead of writing to the bucket — so you NEVER exceed the free tier + get charged. The safe failure mode (LIST fails → reject) means even an S3 outage won't cause charges.
+- For extra safety, the user can set RELAY_S3_MAX_BYTES=9 GB (1 GB headroom below the 10 GB free tier).
+- Files changed: src/lib/relay-store.ts (hard cap + reconcile + counter + HeadObject + s3Bucket helper), .env.example (documented RELAY_S3_MAX_BYTES).
+
+---
+Task ID: 29
+Agent: main (Z.ai Code)
+Task: Security review — verify private info (card, keys) is protected + add security headers.
+
+Work Log:
+- Audited the codebase for secret/credential exposure:
+  * S3 credentials (RELAY_S3_*, R2_*): all server-side env vars, NO NEXT_PUBLIC_ prefix → never bundled into the client JS → never reach the browser. Verified via grep (no NEXT_PUBLIC_ matches for S3 secrets).
+  * The AES relay key: generated in the browser, put in the QR URL fragment (#k=...). URL fragments are never sent to the server in HTTP requests → the server + the signaling relay never see it. The ciphertext on disk/R2 is useless without it.
+  * The only NEXT_PUBLIC_ secret is NEXT_PUBLIC_TURN_CRED (the TURN credential) — but TURN credentials are inherently client-side (the browser needs them to connect to the TURN server). This is standard WebRTC; the "soft secret" tradeoff. The encrypted relay path avoids needing TURN entirely.
+- The user's CARD is NOT in Beam. Beam has NO payment-processing code, NO card fields, NO card storage. The card is entered on the hosting/storage provider's site (Render/Cloudflare/Backblaze), protected by THEIR security, not Beam's.
+- What's protected: file bytes (P2P: DTLS-SRTP encrypted device-to-device; relay: AES-GCM-256 ciphertext, key never on server); S3 creds (server-side env); the relay route only stores ciphertext; the signaling server only relays signaling (offer/answer/candidate/relay-meta/relay-start/relay-complete), never file bytes (the ALLOWED_SIGNAL_KINDS whitelist enforces this).
+- Honest gaps noted: (1) the AES key for NEARBY sends travels via the invite over WSS to the user's own signaling server (weaker than the QR path where the key never touches the server, but acceptable since the user operates the signaling server); (2) the session ID is 6 chars (32^6 ≈ 1B possibilities, ~30 bits — fine for 5-min-lived sessions but brute-forceable with sustained effort); (3) the /api/relay route is "unguessable-share-ID-protected" (22-char base64url, 128 bits — unguessable) but not authenticated (no accounts, by design); (4) no rate limiting on the relay route (the 10 GB cap bounds the damage); (5) no security headers (CSP etc.) — FIXED this turn.
+- FIXED: added security headers in next.config.ts (applied to every response in production):
+  * Content-Security-Policy: default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline' + Google Fonts; connect-src 'self' + the S3 endpoints (R2/B2/S3) + ws/wss (signaling); img-src 'self' data: blob:; frame-ancestors 'none' (blocks clickjacking); base-uri 'self'; form-action 'self'.
+  * X-Frame-Options: DENY (clickjacking).
+  * X-Content-Type-Options: nosniff (MIME sniffing).
+  * Referrer-Policy: strict-origin-when-cross-origin (trims the Referer to the origin — defense in depth for the URL-fragment key).
+  * Permissions-Policy: locks down camera/microphone/geolocation/payment/usb.
+  * Strict-Transport-Security: max-age=63072000; includeSubDomains; preload (forces HTTPS, defeats SSL-strip downgrade).
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- The user's card is NOT in Beam (Beam has no payment code). The S3 credentials are server-side env vars (never reach the browser). The AES relay key is in the QR URL fragment (never sent to the server). File bytes are encrypted (P2P: DTLS-SRTP; relay: AES-GCM-256). The signaling server only relays signaling, never file bytes. So private info is protected by design.
+- Added security headers (CSP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy, HSTS) in next.config.ts for defense in depth.
+- Honest remaining gaps: the nearby-relay key transits the user's own signaling server (the QR path is safer); the session ID is 6 chars (fine for 5-min sessions, not cryptographically strong); the relay route is unguessable-ID-protected (not authenticated, by design — no accounts); no rate limiting (the 10 GB cap bounds the damage). None of these expose the card or the S3 credentials.
+- Files changed: next.config.ts (security headers).

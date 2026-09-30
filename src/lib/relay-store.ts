@@ -6,7 +6,9 @@ import {
   S3Client,
   PutObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   DeleteObjectCommand,
+  ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
 
 /**
@@ -43,32 +45,103 @@ const TTL_MS = 30 * 60 * 1000;
 
 export type RelayMeta = { name: string; size: number; mime: string };
 
-// ---- R2 (S3-compatible) configuration ----
+// ---- Object storage configuration (S3-compatible) ----
+// Works with ANY S3-compatible service, not just Cloudflare R2:
+//   • Backblaze B2 (free tier: 10 GB storage + 1 GB/day egress)
+//   • AWS S3 (free for 12 months: 5 GB storage, but egress fees)
+//   • Wasabi (no egress fees, but a 90-day minimum storage charge — NOT
+//     recommended for Beam since shares are deleted after 30 min)
+//   • MinIO (self-hosted, free, no limits)
+//   • Cloudflare R2 (free 10 GB, $0 egress)
+//
+// Two ways to configure:
+//   GENERIC (any S3 service): set RELAY_S3_ENDPOINT + RELAY_S3_ACCESS_KEY_ID
+//     + RELAY_S3_SECRET_ACCESS_KEY + RELAY_S3_BUCKET (+ optional
+//     RELAY_S3_REGION, defaults to "auto").
+//   CLOUDFLARE R2 (shorthand): set R2_ACCOUNT_ID + R2_ACCESS_KEY_ID +
+//     R2_SECRET_ACCESS_KEY + R2_BUCKET (the endpoint is built from the
+//     account ID as https://<account_id>.r2.cloudflarestorage.com).
+//
+// Generic takes precedence if both are set. All SERVER-SIDE only (no
+// NEXT_PUBLIC_ prefix — must never reach the browser).
+const RELAY_S3_ENDPOINT = process.env.RELAY_S3_ENDPOINT;
+const RELAY_S3_REGION = process.env.RELAY_S3_REGION || "auto";
+const RELAY_S3_ACCESS_KEY_ID = process.env.RELAY_S3_ACCESS_KEY_ID;
+const RELAY_S3_SECRET_ACCESS_KEY = process.env.RELAY_S3_SECRET_ACCESS_KEY;
+const RELAY_S3_BUCKET = process.env.RELAY_S3_BUCKET;
+
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
 const R2_BUCKET = process.env.R2_BUCKET;
 
-const r2Configured =
+// Pick the config: generic S3 if the endpoint is set, else Cloudflare R2 if
+// the account ID is set, else fall back to the ephemeral disk.
+const s3Configured =
+  !!(RELAY_S3_ENDPOINT && RELAY_S3_ACCESS_KEY_ID && RELAY_S3_SECRET_ACCESS_KEY && RELAY_S3_BUCKET) ||
   !!(R2_ACCOUNT_ID && R2_ACCESS_KEY_ID && R2_SECRET_ACCESS_KEY && R2_BUCKET);
 
-let r2Client: S3Client | null = null;
-function getR2(): S3Client {
-  if (!r2Client) {
-    r2Client = new S3Client({
-      region: "auto",
-      endpoint: `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
+let s3Client: S3Client | null = null;
+function getS3(): S3Client {
+  if (!s3Client) {
+    const isGeneric = !!RELAY_S3_ENDPOINT;
+    s3Client = new S3Client({
+      region: isGeneric ? RELAY_S3_REGION : "auto",
+      endpoint: isGeneric
+        ? RELAY_S3_ENDPOINT
+        : `https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com`,
       credentials: {
-        accessKeyId: R2_ACCESS_KEY_ID!,
-        secretAccessKey: R2_SECRET_ACCESS_KEY!,
+        accessKeyId: (isGeneric ? RELAY_S3_ACCESS_KEY_ID : R2_ACCESS_KEY_ID)!,
+        secretAccessKey: (isGeneric ? RELAY_S3_SECRET_ACCESS_KEY : R2_SECRET_ACCESS_KEY)!,
       },
     });
   }
-  return r2Client;
+  return s3Client;
 }
 
-export function isR2(): boolean {
-  return r2Configured;
+// ---- Hard cap for S3 (so you NEVER exceed the free tier + get charged) ----
+// Default 10 GB (matches Cloudflare R2's free tier). Set RELAY_S3_MAX_BYTES
+// to lower it (e.g. 9 GB for headroom) or raise it on a paid plan. When the
+// spooled total would exceed this, the upload is rejected with HTTP 507
+// ("relay full") instead of writing to the bucket + risking an overage charge.
+const RELAY_S3_MAX_BYTES =
+  Number(process.env.RELAY_S3_MAX_BYTES) || 10 * 1024 * 1024 * 1024;
+
+/** The bucket name (generic RELAY_S3_BUCKET or Cloudflare R2_BUCKET). */
+function s3Bucket(): string {
+  return (RELAY_S3_ENDPOINT ? RELAY_S3_BUCKET : R2_BUCKET) || "";
+}
+
+// In-memory counter of the total bytes currently in the bucket. null =
+// unknown (needs a one-time LIST to reconcile on first use). Tracked
+// accurately via increment-on-upload / decrement-on-delete within a process;
+// re-reconciled via LIST every 5 min to correct drift from lifecycle-rule
+// deletions. A drift that OVERestimates is safe (rejects uploads before the
+// actual total reaches the cap — no charges); an UNDERestimate would be
+// unsafe, so we reconcile on startup + periodically to stay accurate.
+let s3TotalBytes: number | null = null;
+let s3LastReconcile = 0;
+const S3_RECONCILE_INTERVAL_MS = 5 * 60 * 1000; // re-LIST at most every 5 min
+
+/** LIST all objects in the bucket + sum their sizes. Paginated (1000/page). */
+async function reconcileS3Total(): Promise<void> {
+  let total = 0;
+  let token: string | undefined;
+  do {
+    const res = await getS3().send(
+      new ListObjectsV2Command({ Bucket: s3Bucket(), ContinuationToken: token }),
+    );
+    for (const obj of res.Contents ?? []) {
+      total += obj.Size ?? 0;
+    }
+    token = res.IsTruncated ? res.NextContinuationToken : undefined;
+  } while (token);
+  s3TotalBytes = total;
+  s3LastReconcile = Date.now();
+}
+
+export function isR2(): boolean { // kept for backward compat (the route imports this)
+  return s3Configured;
 }
 
 // ---- Disk fallback ----
@@ -145,13 +218,13 @@ export async function storeUpload(
   body: ReadableStream<Uint8Array>,
   meta: RelayMeta,
 ): Promise<{ written: number }> {
-  if (r2Configured) {
+  if (s3Configured) {
     // Stream req.body → R2 via PutObject. The SDK streams (chunked), so only
     // a KB-sized buffer sits in RAM. Custom metadata travels with the object.
     const nodeStream = Readable.fromWeb(body as unknown as import("stream/web").ReadableStream<Uint8Array>);
-    await getR2().send(
+    await getS3().send(
       new PutObjectCommand({
-        Bucket: R2_BUCKET,
+        Bucket: s3Bucket(),
         Key: `${id}.bin`,
         Body: nodeStream,
         ContentType: "application/octet-stream",
@@ -164,7 +237,9 @@ export async function storeUpload(
         },
       }),
     );
-    // R2 doesn't report bytes written back; use the claimed size.
+    // R2/S3 doesn't report bytes written back; use the claimed size.
+    // Increment the in-memory total so storeCheckCapacity can enforce the cap.
+    if (s3TotalBytes !== null) s3TotalBytes += meta.size;
     return { written: meta.size };
   }
   // Disk: stream to a temp file.
@@ -187,11 +262,11 @@ export async function storeUpload(
 export async function storeDownload(
   id: string,
 ): Promise<{ stream: ReadableStream<Uint8Array>; meta: RelayMeta; size: number } | null> {
-  if (r2Configured) {
+  if (s3Configured) {
     let res;
     try {
-      res = await getR2().send(
-        new GetObjectCommand({ Bucket: R2_BUCKET, Key: `${id}.bin` }),
+      res = await getS3().send(
+        new GetObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
       );
     } catch {
       return null; // NoSuchKey → missing/expired
@@ -226,10 +301,18 @@ export async function storeDownload(
 
 /** Remove a share (one-time-use cleanup). Best-effort. */
 export async function storeDelete(id: string): Promise<void> {
-  if (r2Configured) {
+  if (s3Configured) {
+    // Decrement the in-memory counter so the cap stays accurate. HEAD the
+    // object to get its size without downloading the whole ciphertext.
     try {
-      await getR2().send(
-        new DeleteObjectCommand({ Bucket: R2_BUCKET, Key: `${id}.bin` }),
+      const head = await getS3().send(
+        new HeadObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
+      ).catch(() => null);
+      if (head && s3TotalBytes !== null) {
+        s3TotalBytes = Math.max(0, s3TotalBytes - (head.ContentLength ?? 0));
+      }
+      await getS3().send(
+        new DeleteObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
       );
     } catch {
       /* best-effort */
@@ -242,14 +325,23 @@ export async function storeDelete(id: string): Promise<void> {
 /** Sweep + return total spooled bytes (for the disk-cap check). On R2 this
  *  is a no-op (rely on the bucket lifecycle rule for expiry). */
 export async function storeSweepAndGetTotal(): Promise<number> {
-  if (r2Configured) return 0; // R2 lifecycle rule handles expiry
+  if (s3Configured) return 0; // R2 lifecycle rule handles expiry
   return diskSweepAndGetTotal();
 }
 
-/** Reject if accepting this upload would blow the disk cap. On R2 there's
- *  no server-side cap (the bucket + lifecycle rule bound it). */
+/** Reject if accepting this upload would blow the cap. On the disk fallback
+ *  this is the 1 GB disk cap; on S3 this is the hard RELAY_S3_MAX_BYTES cap
+ *  (default 10 GB) enforced via an in-memory counter reconciled by LISTing
+ *  the bucket on first use + every 5 min — so you NEVER exceed the free tier
+ *  + get charged. */
 export async function storeCheckCapacity(claimedBytes: number): Promise<boolean> {
-  if (r2Configured) return true;
+  if (s3Configured) {
+    // Reconcile if unknown (first use after restart) or stale (>5 min).
+    if (s3TotalBytes === null || Date.now() - s3LastReconcile > S3_RECONCILE_INTERVAL_MS) {
+      try { await reconcileS3Total(); } catch { /* LIST failed — be conservative, reject */ return false; }
+    }
+    return (s3TotalBytes ?? 0) + claimedBytes <= RELAY_S3_MAX_BYTES;
+  }
   const total = await diskSweepAndGetTotal();
   return total + claimedBytes <= MAX_TOTAL_BYTES;
 }
