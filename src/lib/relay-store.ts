@@ -10,6 +10,7 @@ import {
   DeleteObjectCommand,
   ListObjectsV2Command,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 /**
  * Beam — relay storage adapter.
@@ -320,6 +321,61 @@ export async function storeDelete(id: string): Promise<void> {
     return;
   }
   await diskRemove(id);
+}
+
+// ---- Presigned URLs (the Vercel fix) ----
+// On serverless (Vercel), the serverless function has a 4.5 MB body size
+// limit. The streaming approach (server buffers the body) fails for files
+// > 4.5 MB. Presigned URLs solve this: the serverless function mints a tiny
+// time-limited URL (no body buffering), + the CLIENT uploads/downloads
+// DIRECTLY to/from R2, bypassing the function's body limit entirely.
+// The R2 bucket needs CORS configured to allow PUT/GET from the Beam origin.
+
+/** Mint a presigned PUT URL. The client uploads the ciphertext directly to
+ *  R2 via this URL. Metadata (name/size/mime) travels with the PUT. */
+export async function getPresignedUpload(id: string, meta: RelayMeta): Promise<string> {
+  const url = await getSignedUrl(
+    getS3(),
+    new PutObjectCommand({
+      Bucket: s3Bucket(),
+      Key: `${id}.bin`,
+      ContentType: "application/octet-stream",
+      Metadata: {
+        name: meta.name,
+        size: String(meta.size),
+        mime: meta.mime,
+        expiresat: String(Date.now() + TTL_MS),
+      },
+    }),
+    { expiresIn: 300 }, // 5 min to upload (the TTL is 30 min, this is just the upload window)
+  );
+  return url;
+}
+
+/** HEAD the object (get metadata) + mint a presigned GET URL. The client
+ *  downloads the ciphertext directly from R2 via this URL. Returns null if
+ *  the share is missing/expired. */
+export async function getPresignedDownload(
+  id: string,
+): Promise<{ url: string; meta: RelayMeta; size: number } | null> {
+  try {
+    const head = await getS3().send(
+      new HeadObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
+    );
+    const meta: RelayMeta = {
+      name: head.Metadata?.name ?? "file",
+      size: Number(head.Metadata?.size ?? "0"),
+      mime: head.Metadata?.mime ?? "application/octet-stream",
+    };
+    const url = await getSignedUrl(
+      getS3(),
+      new GetObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
+      { expiresIn: 300 }, // 5 min to download
+    );
+    return { url, meta, size: head.ContentLength ?? meta.size };
+  } catch {
+    return null; // NoSuchKey → missing/expired
+  }
 }
 
 /** Sweep + return total spooled bytes (for the disk-cap check). On R2 this

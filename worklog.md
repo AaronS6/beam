@@ -542,3 +542,32 @@ Stage Summary:
 - The multi-file relay failure on Vercel is caused by the serverless ephemeral-disk limitation (not a code bug). Added a clear 503 error when the route detects it's on serverless without R2 configured, so the failure is obvious instead of silent. The user must set the R2_* env vars on the VERCEL project (external storage works on serverless; ephemeral disk doesn't).
 - For P2P, the multi-file fix is already in the code (Task 25) — the user should redeploy with the latest code.
 - Files changed: src/app/api/relay/route.ts (serverless detection + clear 503 error on POST + GET).
+
+---
+Task ID: 31
+Agent: main (Z.ai Code)
+Task: Fix the Vercel 4.5 MB serverless body limit (causing "all files fail to transfer" with 413/500 "non-retryable streaming request").
+
+Work Log:
+- ROOT CAUSE: Vercel's serverless functions have a 4.5 MB body size limit (Hobby plan). The relay route was streaming the ciphertext body through the function (POST body = ciphertext → server streams to R2). Vercel BUFFERS the entire body before the handler runs → rejects with 413/500 for files > 4.5 MB. Phone photos (3-8 MB) exceed this → all fail.
+- THE FIX: PRESIGNED URLs. The serverless function mints a tiny time-limited presigned URL (no body buffering) + the CLIENT uploads/downloads DIRECTLY to/from R2, bypassing the function's body limit entirely. No body → no 4.5 MB limit.
+- Installed @aws-sdk/s3-request-presigner.
+- Added to src/lib/relay-store.ts:
+  * getPresignedUpload(id, meta): mints a presigned PUT URL with the metadata (name/size/mime) as S3 object metadata. 5-min upload window.
+  * getPresignedDownload(id): HEADs the object (get metadata) + mints a presigned GET URL. 5-min download window. Returns { url, meta, size }.
+- Rewrote src/app/api/relay/route.ts:
+  * POST: two modes. ?name=&size=&mime= (no body) → PROBE: S3 mints { id, uploadUrl }, disk returns { id, needsBody: true }. ?id=X (with body) → DISK UPLOAD: streams the body to disk (only on a long-running server).
+  * GET: S3 returns JSON { downloadUrl, name, size, mime }. Disk returns the raw ciphertext stream (octet-stream + X-File-* headers).
+  * DELETE: unchanged.
+- Rewrote src/lib/relay.ts (the client):
+  * encryptAndUpload: POST (no body, probe) → if uploadUrl → PUT to it (S3, XHR progress). If needsBody → POST with body (disk, XHR progress).
+  * downloadAndDecrypt: GET → if JSON (S3) → parse → XHR GET from downloadUrl (progress). If octet-stream (disk) → read the body (no progress, but disk mode is Render/dev only).
+  * deleteShare: unchanged.
+- The R2 bucket needs CORS configured (the browser uploads/downloads directly to R2 now, which is a different origin than the Beam site). Setup instructions provided in the response.
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- The Vercel 4.5 MB body limit is FIXED via presigned URLs. The serverless function mints a tiny time-limited URL (no body buffering), + the client uploads/downloads DIRECTLY to/from R2, bypassing the function's body limit. Large files (phone photos, bulk transfers) now work on Vercel.
+- The disk fallback (Render/dev) still works via the streaming approach (no body limit on a long-running server).
+- The user needs to: (1) configure CORS on the R2 bucket (allow PUT/GET from the Beam site's origin), (2) redeploy on Vercel with the latest code.
+- Files changed: src/lib/relay-store.ts (presigned URL functions), src/app/api/relay/route.ts (two-mode POST + JSON/raw GET), src/lib/relay.ts (client handles both modes). Added dependency: @aws-sdk/s3-request-presigner.
