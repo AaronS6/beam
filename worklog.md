@@ -524,3 +524,21 @@ Stage Summary:
 - Added security headers (CSP, X-Frame-Options, nosniff, Referrer-Policy, Permissions-Policy, HSTS) in next.config.ts for defense in depth.
 - Honest remaining gaps: the nearby-relay key transits the user's own signaling server (the QR path is safer); the session ID is 6 chars (fine for 5-min sessions, not cryptographically strong); the relay route is unguessable-ID-protected (not authenticated, by design — no accounts); no rate limiting (the 10 GB cap bounds the damage). None of these expose the card or the S3 credentials.
 - Files changed: next.config.ts (security headers).
+
+---
+Task ID: 30
+Agent: main (Z.ai Code)
+Task: Fix the multi-file relay failure on Vercel (serverless) — "delivers 2, fails the rest."
+
+Work Log:
+- ROOT CAUSE: the user deployed the Beam Next.js app on Vercel (serverless) + the signaling server on Render. The relay route's disk fallback (ephemeral /tmp) does NOT work on serverless — each Vercel function invocation is a fresh instance, /tmp is wiped between invocations. So the sender's upload writes to instance-A's /tmp, but the receiver's download hits instance-B's /tmp → the file isn't there → 404 → "failed to deliver". The "2 succeed" are coincidences where the download happened to hit the same WARM instance as the upload (within Vercel's brief warm-reuse window). This is NOT a code bug — it's a fundamental serverless limitation: ephemeral disk doesn't persist across invocations.
+- The fix has two parts:
+  1. CODE: added serverless detection in src/app/api/relay/route.ts. If `process.env.VERCEL` (or `VERCEL_ENV`) is set + no S3/R2 configured, the POST + GET return HTTP 503 with a clear message ("Relay storage not configured. On serverless (Vercel), you MUST set the R2_* or RELAY_S3_* env vars — the ephemeral disk doesn't persist across serverless invocations."). This makes the failure OBVIOUS (a clear error the user can act on) instead of SILENT ("2 succeed + 28 fail" — which looked like a transfer bug but was actually the serverless disk issue).
+  2. CONFIG: the user must set the R2_* env vars on the VERCEL project (not just Render). Vercel → Project → Settings → Environment Variables → add R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET (+ optional RELAY_S3_MAX_BYTES=9663676416 for the 9 GB cap). Once set, the relay route auto-detects R2 + streams to external storage (which works on serverless — the data lives in R2, not /tmp).
+- For P2P (same Wi-Fi): P2P doesn't use the server for file bytes (it's device-to-device WebRTC), so the serverless disk issue doesn't affect it. The multi-file P2P fix (continue instead of break, Task 25) is in the code. If P2P is still failing, the user's Vercel deployment may be from an older commit — they should redeploy with the latest code from the repo.
+- `bun run lint`: 0 errors.
+
+Stage Summary:
+- The multi-file relay failure on Vercel is caused by the serverless ephemeral-disk limitation (not a code bug). Added a clear 503 error when the route detects it's on serverless without R2 configured, so the failure is obvious instead of silent. The user must set the R2_* env vars on the VERCEL project (external storage works on serverless; ephemeral disk doesn't).
+- For P2P, the multi-file fix is already in the code (Task 25) — the user should redeploy with the latest code.
+- Files changed: src/app/api/relay/route.ts (serverless detection + clear 503 error on POST + GET).

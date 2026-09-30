@@ -46,7 +46,27 @@ import {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+// Detect serverless (Vercel) — the ephemeral disk fallback doesn't work on
+// serverless because each invocation is a fresh instance + /tmp doesn't
+// persist across invocations. So uploads write to one instance's /tmp, but
+// the receiver's download hits a DIFFERENT instance → 404 → "failed to
+// deliver". On serverless, R2/S3 MUST be configured (external storage).
+const IS_SERVERLESS = !!(process.env.VERCEL || process.env.VERCEL_ENV);
+
 export async function POST(req: NextRequest) {
+  // Hard requirement on serverless: S3/R2 must be configured. The disk
+  // fallback only works on a long-running server (Render/VPS) where /tmp
+  // persists within the process. Without this check, the failure is silent
+  // ("2 succeed + 28 fail" — the 2 are warm-instance coincidences).
+  if (IS_SERVERLESS && !isR2()) {
+    return NextResponse.json(
+      {
+        error:
+          "Relay storage not configured. On serverless (Vercel), you MUST set the R2_* or RELAY_S3_* env vars (object storage) — the ephemeral disk doesn't persist across serverless invocations. See .env.example.",
+      },
+      { status: 503 },
+    );
+  }
   await storeSweepAndGetTotal();
   const params = req.nextUrl.searchParams;
   const name = params.get("name") ?? "file";
@@ -89,6 +109,14 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  // Same serverless check as POST — if no S3 on Vercel, the disk fallback
+  // can't find the file (different instance) → 404. Fail clearly instead.
+  if (IS_SERVERLESS && !isR2()) {
+    return NextResponse.json(
+      { error: "Relay storage not configured on this serverless deployment. Set the R2_* env vars." },
+      { status: 503 },
+    );
+  }
   await storeSweepAndGetTotal();
   const id = req.nextUrl.searchParams.get("id");
   if (!id) return NextResponse.json({ error: "missing id" }, { status: 400 });
