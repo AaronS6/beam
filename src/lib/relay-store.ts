@@ -310,11 +310,15 @@ export async function storeDelete(id: string): Promise<void> {
         new HeadObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
       ).catch(() => null);
       if (head && s3TotalBytes !== null) {
-        s3TotalBytes = Math.max(0, s3TotalBytes - (head.ContentLength ?? 0));
+        s3TotalBytes = Math.max(0, s3TotalBytes - (head.ContentLength ?? 0) - 200);
       }
       await getS3().send(
         new DeleteObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
       );
+      // Also delete the metadata sidecar.
+      await getS3().send(
+        new DeleteObjectCommand({ Bucket: s3Bucket(), Key: `${id}.meta.json` }),
+      ).catch(() => {});
     } catch {
       /* best-effort */
     }
@@ -332,47 +336,65 @@ export async function storeDelete(id: string): Promise<void> {
 // The R2 bucket needs CORS configured to allow PUT/GET from the Beam origin.
 
 /** Mint a presigned PUT URL. The client uploads the ciphertext directly to
- *  R2 via this URL. Metadata (name/size/mime) travels with the PUT. */
+ *  R2 via this URL. NOTE: presigned PUT URLs DON'T reliably store custom
+ *  metadata (the client's XHR PUT doesn't send x-amz-meta-* headers), so
+ *  we ALSO store a metadata sidecar ({id}.meta.json) separately. */
 export async function getPresignedUpload(id: string, meta: RelayMeta): Promise<string> {
+  // Store the metadata sidecar (small JSON object) so the receiver can read
+  // it back during download (the presigned PUT doesn't carry metadata).
+  await getS3().send(
+    new PutObjectCommand({
+      Bucket: s3Bucket(),
+      Key: `${id}.meta.json`,
+      Body: JSON.stringify({ ...meta, expiresAt: Date.now() + TTL_MS }),
+      ContentType: "application/json",
+    }),
+  );
+  // Mint the presigned PUT URL for the ciphertext blob.
   const url = await getSignedUrl(
     getS3(),
     new PutObjectCommand({
       Bucket: s3Bucket(),
       Key: `${id}.bin`,
       ContentType: "application/octet-stream",
-      Metadata: {
-        name: meta.name,
-        size: String(meta.size),
-        mime: meta.mime,
-        expiresat: String(Date.now() + TTL_MS),
-      },
     }),
-    { expiresIn: 300 }, // 5 min to upload (the TTL is 30 min, this is just the upload window)
+    { expiresIn: 300 },
   );
+  // Increment the in-memory counter for the sidecar (small, ~100 bytes).
+  if (s3TotalBytes !== null) s3TotalBytes += 200;
   return url;
 }
 
-/** HEAD the object (get metadata) + mint a presigned GET URL. The client
- *  downloads the ciphertext directly from R2 via this URL. Returns null if
- *  the share is missing/expired. */
+/** Read the metadata sidecar ({id}.meta.json) + mint a presigned GET URL.
+ *  We use a sidecar (not the object's HEAD metadata) because presigned PUT
+ *  URLs don't reliably store custom metadata (the client's XHR PUT doesn't
+ *  send x-amz-meta-* headers). Returns null if the share is missing/expired. */
 export async function getPresignedDownload(
   id: string,
 ): Promise<{ url: string; meta: RelayMeta; size: number } | null> {
   try {
-    const head = await getS3().send(
-      new HeadObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
+    // Read the metadata sidecar.
+    const metaRes = await getS3().send(
+      new GetObjectCommand({ Bucket: s3Bucket(), Key: `${id}.meta.json` }),
     );
-    const meta: RelayMeta = {
-      name: head.Metadata?.name ?? "file",
-      size: Number(head.Metadata?.size ?? "0"),
-      mime: head.Metadata?.mime ?? "application/octet-stream",
-    };
+    const metaText = await (metaRes.Body as unknown as { transformToString: () => Promise<string> }).transformToString();
+    const metaObj = JSON.parse(metaText) as RelayMeta & { expiresAt?: number };
+    // Check TTL.
+    if (metaObj.expiresAt && Date.now() > metaObj.expiresAt) return null;
+    const meta: RelayMeta = { name: metaObj.name, size: metaObj.size, mime: metaObj.mime };
+    // Mint the presigned GET URL for the ciphertext.
     const url = await getSignedUrl(
       getS3(),
       new GetObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }),
-      { expiresIn: 300 }, // 5 min to download
+      { expiresIn: 300 },
     );
-    return { url, meta, size: head.ContentLength ?? meta.size };
+    // Get the ciphertext size via HEAD.
+    let size = meta.size;
+    try {
+      const head = await getS3().send(new HeadObjectCommand({ Bucket: s3Bucket(), Key: `${id}.bin` }));
+      size = head.ContentLength ?? meta.size;
+    } catch { /* use meta.size if HEAD fails */ }
+    return { url, meta, size };
   } catch {
     return null; // NoSuchKey → missing/expired
   }

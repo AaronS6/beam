@@ -41,6 +41,7 @@ export function Footer() {
           <a href="https://webrtc.org" target="_blank" rel="noreferrer" className="transition-colors hover:text-foreground">
             WebRTC
           </a>
+          <span className="text-xs text-muted-foreground/50">v1.0</span>
         </div>
       </div>
     </footer>
