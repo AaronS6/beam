@@ -42,17 +42,24 @@ export async function importTransferKey(b64url: string): Promise<CryptoKey> {
   );
 }
 
-/** Encrypt a File. Returns a single ArrayBuffer = iv(12 bytes) || ciphertext
- *  (with the GCM auth tag appended by Web Crypto). One self-contained blob to
- *  upload — the server stores this opaquely, the receiver splits + decrypts. */
-export async function encryptFile(file: File, key: CryptoKey): Promise<ArrayBuffer> {
+/** Encrypt an ArrayBuffer (a chunk or a whole file). Returns a single
+ *  ArrayBuffer = iv(12 bytes) || ciphertext (with the GCM auth tag). */
+export async function encryptBuffer(plaintext: ArrayBuffer, key: CryptoKey): Promise<ArrayBuffer> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = await file.arrayBuffer();
   const ciphertext = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, plaintext);
   const combined = new Uint8Array(12 + ciphertext.byteLength);
   combined.set(iv, 0);
   combined.set(new Uint8Array(ciphertext), 12);
   return combined.buffer;
+}
+
+/** Encrypt a File. Returns a single ArrayBuffer = iv(12 bytes) || ciphertext
+ *  (with the GCM auth tag appended by Web Crypto). One self-contained blob to
+ *  upload — the server stores this opaquely, the receiver splits + decrypts.
+ *  For large files (>200 MB), use encryptBuffer per chunk instead (see
+ *  relay.ts encryptAndUploadChunked) to avoid OOM. */
+export async function encryptFile(file: File, key: CryptoKey): Promise<ArrayBuffer> {
+  return encryptBuffer(await file.arrayBuffer(), key);
 }
 
 /** Decrypt a combined iv(12)||ciphertext blob back into the original bytes.

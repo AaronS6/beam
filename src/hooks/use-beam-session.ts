@@ -1438,7 +1438,7 @@ async function runReceiverRelay(
             });
             return { ...s, files: fs, receivedBytes: rb };
           });
-        });
+        }, sh.chunkIds, sh.size, { name: sh.name, mime: sh.mime });
         // Mark done + set the blob URL (same shape as the P2P onFileComplete).
         setState((s) => ({
           ...s,
@@ -1452,7 +1452,7 @@ async function runReceiverRelay(
           setState((s) => ({ ...s, files: s.files.map((f) => (f.id === id ? { ...f, imageUrl: url } : f)) }));
         }
         // One-time-use cleanup.
-        deleteShare(sh.id!);
+        deleteShare(sh.id!, sh.chunkIds);
       } catch (e) {
         setState((s) => ({
           ...s,
